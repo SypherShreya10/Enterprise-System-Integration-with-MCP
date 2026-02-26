@@ -156,7 +156,7 @@ def get_product(
             "fields": fields,
             "limit": limit,
             "company_id": client.company_id,
-            "user_id": client.user_id,
+            "user_id": client.uid,
             "search_params": {
                 "product_id": product_id,
                 "name": name,
@@ -357,7 +357,7 @@ def get_product_stock(
             "product_id": product_id,
             "location_id": location_id,
             "company_id": client.company_id,
-            "user_id": client.user_id,
+            "user_id": client.uid,
         },
     )
 
