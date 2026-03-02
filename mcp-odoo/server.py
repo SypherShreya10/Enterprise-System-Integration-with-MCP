@@ -27,6 +27,13 @@ from tools.mail import (
     get_activity,
 )
 
+from tools.erp import (
+    get_product,
+    get_product_stock,
+    check_product_availability,
+    get_stock_location,
+)
+
 # ------------------------------------------------------------------------------
 # Create MCP server
 # ------------------------------------------------------------------------------
@@ -396,6 +403,172 @@ def get_team_tool(
         limit=limit,
     )
 
+# ------------------------------------------------------------------
+# section 3: tool 15 - create_activity
+# ------------------------------------------------------------------
+
+@mcp.tool(
+    name="create_activity",
+    description=(
+        "Create a follow-up activity (call, meeting, reminder).\n\n"
+        "Requires activity_type_id, assigned user, deadline, "
+        "and related record (res_model, res_id).\n"
+        "Create-only operation."
+    ),
+)
+def create_activity_tool(
+    activity_type_id: int,
+    user_id: int,
+    date_deadline: str,
+    res_model: str,
+    res_id: int,
+    summary: str | None = None,
+    note: str | None = None,
+):
+    return create_activity(
+        activity_type_id=activity_type_id,
+        user_id=user_id,
+        date_deadline=date_deadline,
+        res_model=res_model,
+        res_id=res_id,
+        summary=summary,
+        note=note,
+    )
+
+# ------------------------------------------------------------------
+# section 3: tool 16 - get_activity
+# ------------------------------------------------------------------
+
+@mcp.tool(
+    name="get_activity",
+    description=(
+        "Fetch scheduled activities.\n\n"
+        "Filter by assigned user, model, due date, or state.\n"
+        "At least one filter is required."
+    ),
+)
+def get_activity_tool(
+    user_id: int | None = None,
+    res_model: str | None = None,
+    date_deadline: str | None = None,
+    state: str | None = None,
+    limit: int = 100,
+):
+    return get_activity(
+        user_id=user_id,
+        res_model=res_model,
+        date_deadline=date_deadline,
+        state=state,
+        limit=limit,
+    )
+
+# ------------------------------------------------------------------
+# section 4: tool 17 - get_product
+# ------------------------------------------------------------------
+
+@mcp.tool(
+    name="get_product",
+    description=(
+        "Fetch sellable product details from Odoo.\n\n"
+        "Search by product_id, name, SKU (default_code), category, or type.\n"
+        "Only active, sale-enabled products are returned.\n"
+        "Cost fields are excluded."
+    ),
+)
+def get_product_tool(
+    product_id: int | None = None,
+    name: str | None = None,
+    default_code: str | None = None,
+    categ_id: int | None = None,
+    type: str | None = None,
+    limit: int = 10,
+):
+    return get_product(
+        product_id=product_id,
+        name=name,
+        default_code=default_code,
+        categ_id=categ_id,
+        type=type,
+        limit=limit,
+    )
+
+# ------------------------------------------------------------------
+# section 4: tool 18 - get_product_stock
+# ------------------------------------------------------------------
+
+@mcp.tool(
+    name="get_product_stock",
+    description=(
+        "Check inventory quantity for a product.\n\n"
+        "Returns total quantity, reserved quantity, "
+        "available quantity, and warehouse breakdown.\n"
+        "Internal warehouse locations only."
+    ),
+)
+def get_product_stock_tool(
+    product_id: int,
+    location_id: int | None = None,
+):
+    return get_product_stock(
+        product_id=product_id,
+        location_id=location_id,
+    )
+
+# ------------------------------------------------------------------
+# section 4: tool 19 - check_product_availability
+# ------------------------------------------------------------------
+
+@mcp.tool(
+    name="check_product_availability",
+    description=(
+        "Check whether requested quantity of a product can be fulfilled.\n\n"
+        "Composite tool combining:\n"
+        "- Current stock (stock.quant)\n"
+        "- Reserved quantities\n"
+        "- Incoming purchase orders (optional if date provided)\n\n"
+        "Use case:\n"
+        "'Can we deliver 200 units by Dec 15?'\n"
+        "'Do we have enough stock for this order?'\n\n"
+        "Returns stock breakdown, shortage (if any), and recommended action."
+    ),
+)
+def check_product_availability_tool(
+    product_id: int,
+    quantity: float,
+    date_required: str | None = None,
+):
+    return check_product_availability(
+        product_id=product_id,
+        quantity=quantity,
+        date_required=date_required,
+    )
+
+# ------------------------------------------------------------------
+# section 4: tool 20 - get_stock_location
+# ------------------------------------------------------------------
+
+@mcp.tool(
+    name="get_stock_location",
+    description=(
+        "Fetch internal warehouse / stock location information.\n\n"
+        "Supports:\n"
+        "- Listing all internal warehouse locations\n"
+        "- Filtering by location_id\n"
+        "- Searching by partial location name\n\n"
+        "Only internal company locations are returned.\n"
+        "Customer, supplier, and transit locations are excluded."
+    ),
+)
+def get_stock_location_tool(
+    location_id: int | None = None,
+    name: str | None = None,
+    limit: int = 50,
+):
+    return get_stock_location(
+        location_id=location_id,
+        name=name,
+        limit=limit,
+    )
 
 # ------------------------------------------------------------------------------
 # Server entry point

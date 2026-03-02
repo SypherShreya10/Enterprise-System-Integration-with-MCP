@@ -435,7 +435,7 @@ Why Required:
   when specific conditions met (e.g., no response in 3 days).
 
 ────────────────────────────────────────────────────────────────────────────────
-Tool ID: 016
+✅Tool ID: 016
 Tool Name: get_activity
 ────────────────────────────────────────────────────────────────────────────────
 Model: mail.activity
@@ -461,7 +461,7 @@ SECTION 4: INVENTORY / STOCK MANAGEMENT
 Risk Level: LOW (Read Only) - No inventory adjustments allowed
 
 ────────────────────────────────────────────────────────────────────────────────
-Tool ID: 017
+✅Tool ID: 017
 Tool Name: get_product
 ────────────────────────────────────────────────────────────────────────────────
 Model: product.product
@@ -500,7 +500,7 @@ Why Required:
   without knowing product IDs and prices.
 
 ────────────────────────────────────────────────────────────────────────────────
-Tool ID: 018
+✅Tool ID: 018
 Tool Name: get_product_stock
 ────────────────────────────────────────────────────────────────────────────────
 Model: stock.quant
@@ -533,7 +533,7 @@ Why Required:
   Without this, can't answer basic inventory questions.
 
 ────────────────────────────────────────────────────────────────────────────────
-Tool ID: 019
+✅Tool ID: 019
 Tool Name: check_product_availability
 ────────────────────────────────────────────────────────────────────────────────
 Model: product.product + stock.quant (COMPOSITE TOOL)
@@ -568,7 +568,7 @@ Why Required:
   Saves AI from making multiple queries and doing calculations.
 
 ────────────────────────────────────────────────────────────────────────────────
-Tool ID: 020
+✅Tool ID: 020
 Tool Name: get_stock_location
 ────────────────────────────────────────────────────────────────────────────────
 Model: stock.location

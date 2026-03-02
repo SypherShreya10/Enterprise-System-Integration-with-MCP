@@ -1,5 +1,6 @@
 from typing import Optional, List, Dict, Any
 import logging
+import datetime
 from odoo_client import OdooClient
 
 logger = logging.getLogger(__name__)
@@ -452,4 +453,470 @@ def get_product_stock(
         )
         raise RuntimeError(
             f"Failed to fetch stock data for product {product_id}: {str(exc)}"
+        ) from exc
+
+
+#section 4: tool 19 - check product availability
+def check_product_availability(
+    *,
+    product_id: int,
+    quantity: float,
+    date_required: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Determine whether requested quantity of a product can be fulfilled.
+
+    Composite tool combining product, stock, and purchase order data
+    to provide comprehensive availability analysis.
+
+    Args:
+        product_id: Product ID to check (required)
+        quantity: Required quantity (required, must be positive)
+        date_required: Target delivery date in YYYY-MM-DD format (optional)
+
+    Returns:
+        Dictionary with:
+        - product_id, product_name, product_type
+        - requested_quantity
+        - date_required
+        - current_stock (available after reserved)
+        - current_stock_total (before reserved)
+        - current_stock_reserved
+        - incoming_quantity (from purchase orders)
+        - can_fulfill (boolean)
+        - shortage (quantity short if can't fulfill)
+        - recommended_action (next steps)
+
+    Raises:
+        ValueError: If invalid parameters
+        RuntimeError: If Odoo operations fail
+
+    Safety Guarantees:
+        - Read-only composite operation
+        - No inventory mutations
+        - Company-scoped automatically
+        - No cost data exposed
+
+    Business Use Cases:
+        - "Can we fulfill order for 200 units by Dec 15?"
+        - "Do we have enough stock for this sale?"
+        - "When can we deliver if stock is low?"
+
+    Logic:
+        1. Verify product exists and is active
+        2. Handle non-stockable items (consumables/services)
+        3. Aggregate current stock (total - reserved)
+        4. Check incoming purchase orders (if date specified)
+        5. Calculate availability and provide recommendation
+
+    Compliance:
+        - AI Safety & Execution Constraints
+        - Read-only operations
+    """
+
+    # ------------------------------------------------------------------
+    # Input Validation
+    # ------------------------------------------------------------------
+
+    if not isinstance(product_id, int) or product_id <= 0:
+        raise ValueError(
+            f"product_id must be positive integer, got: {product_id}"
+        )
+
+    if not isinstance(quantity, (int, float)) or quantity <= 0:
+        raise ValueError(
+            f"quantity must be positive number, got: {quantity}"
+        )
+
+    required_date_obj = None
+    if date_required:
+        try:
+            required_date_obj = datetime.date.fromisoformat(date_required)
+        except (ValueError, TypeError) as e:
+            raise ValueError(
+                f"date_required must be in YYYY-MM-DD format, got: {date_required}"
+            ) from e
+
+    # ------------------------------------------------------------------
+    # Audit Logging (Start)
+    # ------------------------------------------------------------------
+
+    logger.info(
+        "MCP Tool: check_product_availability",
+        extra={
+            "model": "product.product + stock.quant + purchase.order.line (composite)",
+            "operation": "availability_check",
+            "product_id": product_id,
+            "requested_quantity": quantity,
+            "date_required": date_required,
+            "company_id": client.company_id,
+            "user_id": client.uid,
+        },
+    )
+
+    # ------------------------------------------------------------------
+    # Step 1: Verify Product Exists
+    # ------------------------------------------------------------------
+
+    try:
+        product = client.search_read(
+            model="product.product",
+            domain=[
+                ("id", "=", product_id),
+                ("active", "=", True),
+            ],
+            fields=["id", "name", "type"],
+            limit=1,
+        )
+
+        if not product:
+            raise ValueError(
+                f"Product with id={product_id} not found or inactive"
+            )
+
+        product_data = product[0]
+        product_name = product_data["name"]
+        product_type = product_data["type"]
+
+    except ValueError:
+        raise
+    except Exception as exc:
+        logger.error(
+            f"Product lookup failed: {type(exc).__name__}: {str(exc)}",
+            extra={"product_id": product_id},
+            exc_info=True,
+        )
+        raise RuntimeError(
+            f"Failed to verify product {product_id}: {str(exc)}"
+        ) from exc
+
+    # ------------------------------------------------------------------
+    # Step 2: Handle Non-Stocked Products
+    # ------------------------------------------------------------------
+
+    # Consumables and services don't track physical stock
+    # if product_type in ["consu", "service"]:
+    #     logger.info(
+    #         f"Product {product_id} ({product_name}) is {product_type} - no stock tracking",
+    #         extra={"product_type": product_type},
+    #     )
+        
+    #     return {
+    #         "product_id": product_id,
+    #         "product_name": product_name,
+    #         "product_type": product_type,
+    #         "requested_quantity": quantity,
+    #         "date_required": date_required,
+    #         "current_stock": None,
+    #         "current_stock_total": None,
+    #         "current_stock_reserved": None,
+    #         "incoming_quantity": None,
+    #         "can_fulfill": True,
+    #         "shortage": 0.0,
+    #         "recommended_action": f"{product_type.capitalize()} item - no stock tracking required",
+    #     }
+
+    # ------------------------------------------------------------------
+    # Step 3: Get Current Stock
+    # ------------------------------------------------------------------
+
+    try:
+        quants = client.search_read(
+            model="stock.quant",
+            domain=[
+                ("product_id", "=", product_id),
+                ("quantity", ">", 0),
+                ("location_id.usage", "=", "internal"),
+            ],
+            fields=["quantity", "reserved_quantity"],
+            limit=100,
+        )
+
+        total_qty = sum(q["quantity"] for q in quants)
+        total_reserved = sum(q["reserved_quantity"] for q in quants)
+        total_available = total_qty - total_reserved
+
+    except Exception as exc:
+        logger.error(
+            f"Stock lookup failed: {type(exc).__name__}: {str(exc)}",
+            extra={"product_id": product_id},
+            exc_info=True,
+        )
+        raise RuntimeError(
+            f"Failed to fetch stock for product {product_id}: {str(exc)}"
+        ) from exc
+
+    # ------------------------------------------------------------------
+    # Step 4: Basic Fulfillment Check
+    # ------------------------------------------------------------------
+
+    can_fulfill = total_available >= quantity
+    shortage = max(quantity - total_available, 0.0)
+    incoming_qty = 0.0
+
+    # ------------------------------------------------------------------
+    # Step 5: Check Incoming Purchase Orders (if date specified)
+    # ------------------------------------------------------------------
+
+    if required_date_obj and not can_fulfill:
+        try:
+            purchase_lines = client.search_read(
+                model="purchase.order.line",
+                domain=[
+                    ("product_id", "=", product_id),
+                    ("order_id.state", "=", "purchase"),  # Confirmed POs only
+                ],
+                fields=[
+                    "product_qty",
+                    "qty_received",
+                    "date_planned",  # ✅ Direct field on line
+                ],
+                limit=100,
+            )
+
+            for line in purchase_lines:
+                # Calculate remaining quantity to be received
+                remaining = line["product_qty"] - line["qty_received"]
+                
+                if remaining <= 0:
+                    continue
+
+                # Check planned delivery date
+                if line.get("date_planned"):
+                    planned_date_str = line["date_planned"]
+                    
+                    # Handle datetime format (might have time component)
+                    if isinstance(planned_date_str, str):
+                        planned_date_str = planned_date_str.split(" ")[0]
+                        try:
+                            planned_date = datetime.date.fromisoformat(planned_date_str)
+                            
+                            # Only count if arriving before required date
+                            if planned_date <= required_date_obj:
+                                incoming_qty += remaining
+                        except:
+                            # If date parsing fails, count it anyway (conservative)
+                            incoming_qty += remaining
+                else:
+                    # No planned date - count it anyway
+                    incoming_qty += remaining
+
+            # Recalculate fulfillment with incoming stock
+            if (total_available + incoming_qty) >= quantity:
+                can_fulfill = True
+                shortage = 0.0
+
+        except Exception as exc:
+            logger.error(
+                f"Purchase order lookup failed: {type(exc).__name__}: {str(exc)}",
+                extra={"product_id": product_id},
+                exc_info=True,
+            )
+            # Don't fail - just log warning and continue without PO data
+            logger.warning(
+                f"Could not evaluate incoming POs for product {product_id}",
+                extra={"error": str(exc)},
+            )
+
+    # ------------------------------------------------------------------
+    # Step 6: Recommended Action
+    # ------------------------------------------------------------------
+
+    if can_fulfill:
+        if incoming_qty > 0:
+            recommended_action = "Sufficient with incoming stock - proceed with sale"
+        else:
+            recommended_action = "Stock sufficient - proceed with sale"
+    else:
+        if incoming_qty > 0:
+            recommended_action = f"Short {shortage} units even with incoming - create urgent purchase order"
+        else:
+            recommended_action = f"Short {shortage} units - create purchase order"
+
+    # ------------------------------------------------------------------
+    # Audit Logging (Result)
+    # ------------------------------------------------------------------
+
+    logger.info(
+        f"check_product_availability completed: Product {product_id} ({product_name}) - "
+        f"Requested: {quantity}, Available: {total_available}, Incoming: {incoming_qty}, "
+        f"Can fulfill: {can_fulfill}",
+        extra={
+            "product_id": product_id,
+            "product_name": product_name,
+            "requested_quantity": quantity,
+            "available_quantity": total_available,
+            "incoming_quantity": incoming_qty,
+            "can_fulfill": can_fulfill,
+            "shortage": shortage,
+        },
+    )
+
+    # ------------------------------------------------------------------
+    # Return Comprehensive Result
+    # ------------------------------------------------------------------
+
+    return {
+        "product_id": product_id,
+        "product_name": product_name,
+        "product_type": product_type,
+        "requested_quantity": quantity,
+        "date_required": date_required,
+        "current_stock": total_available,
+        "current_stock_total": total_qty,
+        "current_stock_reserved": total_reserved,
+        "incoming_quantity": incoming_qty,
+        "can_fulfill": can_fulfill,
+        "shortage": shortage,
+        "recommended_action": recommended_action,
+    }
+
+
+#section 4: tool 20 - get stock location 
+def get_stock_location(
+    *,
+    location_id: Optional[int] = None,
+    name: Optional[str] = None,
+    limit: int = 50,
+) -> List[Dict[str, Any]]:
+    """
+    Fetch internal warehouse/stock location information.
+
+    Get details about company warehouses and storage locations.
+    Customer, supplier, and transit locations excluded for security.
+
+    Args:
+        location_id: Specific location ID
+        name: Search by location name (partial match)
+        limit: Maximum records (default=50, max=100)
+
+    Returns:
+        List of location dictionaries with:
+        - id, name, complete_name (full hierarchical path)
+        - usage (always 'internal')
+        - company_id
+
+    Raises:
+        ValueError: If invalid parameters
+        RuntimeError: If Odoo operation fails
+
+    Safety Guarantees:
+        - Read-only operation
+        - Internal locations only (warehouses)
+        - Customer/supplier/transit locations excluded
+        - Company-scoped automatically
+        - Bounded results
+
+    Business Use Cases:
+        - "What warehouses do we have?"
+        - "Where is Warehouse A?"
+        - "List all storage locations"
+
+    Security:
+        Only internal warehouse locations exposed.
+        External locations (customer, supplier) hidden for security.
+
+    Compliance:
+        - AI Safety & Execution Constraints
+        - Domain-restricted operations
+    """
+
+    # ------------------------------------------------------------------
+    # Input Validation
+    # ------------------------------------------------------------------
+
+    if limit < 1 or limit > 100:
+        raise ValueError(f"Limit must be between 1 and 100, got: {limit}")
+
+    # ------------------------------------------------------------------
+    # Domain Construction (STRICT - Internal Only)
+    # ------------------------------------------------------------------
+
+    # ALWAYS restrict to internal locations
+    domain = [
+        ("usage", "=", "internal"),  # Warehouses only
+    ]
+
+    # Search filters
+    if location_id is not None:
+        if not isinstance(location_id, int) or location_id <= 0:
+            raise ValueError(
+                f"location_id must be positive integer, got: {location_id}"
+            )
+        domain.append(("id", "=", location_id))
+
+    if name is not None:
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("name must be non-empty string")
+        domain.append(("name", "ilike", name.strip()))
+
+    # ------------------------------------------------------------------
+    # Allowed Fields
+    # ------------------------------------------------------------------
+
+    fields = [
+        "id",
+        "name",
+        "complete_name",  # Full hierarchical path
+        "usage",          # Always 'internal'
+        "company_id",     # Returns (id, name)
+    ]
+
+    # ------------------------------------------------------------------
+    # Audit Logging
+    # ------------------------------------------------------------------
+
+    logger.info(
+        "MCP Tool: get_stock_location",
+        extra={
+            "model": "stock.location",
+            "operation": "search_read",
+            "domain": domain,
+            "fields": fields,
+            "limit": limit,
+            "company_id": client.company_id,
+            "user_id": client.uid,
+            "search_params": {
+                "location_id": location_id,
+                "name": name,
+            },
+        },
+    )
+
+    # ------------------------------------------------------------------
+    # Execute with Error Handling
+    # ------------------------------------------------------------------
+
+    try:
+        records = client.search_read(
+            model="stock.location",
+            domain=domain,
+            fields=fields,
+            limit=limit,
+        )
+
+        # Log success
+        logger.info(
+            f"get_stock_location completed: {len(records)} location(s) found",
+            extra={"record_count": len(records)},
+        )
+
+        return records
+
+    except Exception as exc:
+        # Log failure
+        logger.error(
+            f"get_stock_location failed: {type(exc).__name__}: {str(exc)}",
+            extra={
+                "domain": domain,
+                "error_type": type(exc).__name__,
+                "search_params": {
+                    "location_id": location_id,
+                    "name": name,
+                },
+            },
+            exc_info=True,
+        )
+        raise RuntimeError(
+            f"Failed to fetch stock locations: {str(exc)}"
         ) from exc

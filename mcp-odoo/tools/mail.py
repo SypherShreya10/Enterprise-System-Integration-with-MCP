@@ -228,6 +228,8 @@ def create_activity(
             f"Failed to create activity: {str(exc)}"
         ) from exc
 
+
+#section 3: tool 16 - get activity
 def get_activity(
     *,
     user_id: Optional[int] = None,
