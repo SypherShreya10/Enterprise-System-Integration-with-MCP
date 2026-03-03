@@ -703,7 +703,7 @@ Why Required:
   Heavy validation prevents pricing errors or invalid orders.
 
 ────────────────────────────────────────────────────────────────────────────────
-Tool ID: 024
+✅Tool ID: 024
 Tool Name: get_customer_order_history
 ────────────────────────────────────────────────────────────────────────────────
 Model: sale.order (filtered)

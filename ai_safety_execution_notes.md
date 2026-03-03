@@ -101,12 +101,24 @@ Allowed Fields (READ):
 - name
 - partner_id
 - date_order
+- validity_date
+- amount_untaxed
+- amount_tax
 - amount_total
 - state
+- user_id
+Note:
+When returning user_id, only return:
+- id
+- display name
+Do NOT expose login, email, or access data.
 
 Allowed Fields (CREATE):
 - partner_id
 - order_line
+- date_order
+- validity_date
+- client_order_ref
 
 Forbidden Fields:
 - company_id
@@ -117,7 +129,8 @@ Forbidden Fields:
 
 Domain Restrictions:
 - company_id = current_company
-- state != 'cancel'
+- state IN ('draft','sent','sale','done','cancel')
+- limit <= 100
 
 ---
 
@@ -127,10 +140,14 @@ Allowed Operations:
 - read
 
 Allowed Fields:
+- id
+- order_id
 - product_id
 - product_uom_qty
 - price_unit
-- order_id
+- price_subtotal
+- price_total
+- discount
 
 Forbidden Fields:
 - discount_policy

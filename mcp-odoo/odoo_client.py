@@ -59,6 +59,12 @@ class OdooClient:
 
     MAX_RECORDS = 100
 
+    # Models where Odoo sets company_id automatically on create.
+    # Do NOT inject company_id manually for these.
+    MODELS_WITH_AUTO_COMPANY = {
+        "sale.order",
+    }
+
     def __init__(self):
         self.url = os.getenv("ODOO_URL")
         self.db = os.getenv("ODOO_DB")
@@ -186,7 +192,11 @@ class OdooClient:
         if "company_id" in values:
             raise ValidationError("company_id cannot be set manually.")
 
-        values["company_id"] = self.company_id
+        # values["company_id"] = self.company_id
+        # Only inject company_id for models that need explicit assignment.
+        # For MODELS_WITH_AUTO_COMPANY, Odoo sets it automatically on create.
+        if model not in self.MODELS_WITH_AUTO_COMPANY:
+            values["company_id"] = self.company_id
 
         self._log_operation(
             model=model,
@@ -237,6 +247,77 @@ class OdooClient:
             "write",
             [[record_id], values],
         )
+    
+    
+    def search_count(
+        self,
+        model: str,
+        domain: List,
+        apply_company_scope: bool = True,
+    ) -> int:
+            """
+            Safe count operation.
+            Used for analytics and total record calculation.
+            """
+
+            self._validate_aggregate_domain(domain)
+
+            if apply_company_scope:
+                domain = self._apply_company_scope(domain, model)
+
+            self._log_operation(
+                model=model,
+                operation="search_count",
+                domain=domain,
+            )
+
+            return self.models.execute_kw(
+                self.db,
+                self.uid,
+                self.password,
+                model,
+                "search_count",
+                [domain],
+            )
+
+
+    def read_group(
+        self,
+        model: str,
+        domain: List,
+        fields: List[str],
+        groupby: List[str],
+        apply_company_scope: bool = True,
+    ) -> List[Dict[str, Any]]:
+        """
+        Safe read_group operation for server-side aggregation.
+        Used for revenue totals, state breakdowns, etc.
+        """
+
+        self._validate_aggregate_domain(domain)
+        self._validate_fields(fields)
+
+        if apply_company_scope:
+            domain = self._apply_company_scope(domain, model)
+
+        self._log_operation(
+            model=model,
+            operation="read_group",
+            domain=domain,
+            fields=fields,
+            groupby=groupby,
+        )
+
+        return self.models.execute_kw(
+            self.db,
+            self.uid,
+            self.password,
+            model,
+            "read_group",
+            [domain, fields, groupby],
+        )
+
+
 
     # --------------------------------------------------------------------------
     # Validation helpers
@@ -253,6 +334,15 @@ class OdooClient:
             raise ValidationError("Domain must be a list.")
         if domain == []:
             raise ValidationError("Empty domain (full table scan) is forbidden.")
+        
+    def _validate_aggregate_domain(self, domain: List):
+        """
+        Lighter domain validation for search_count and read_group.
+        Empty domain is allowed for aggregation — it means 'all records'.
+        Full table scan protection is not required for count/aggregate ops.
+        """
+        if not isinstance(domain, list):
+            raise ValidationError("Domain must be a list.")
 
     def _validate_fields(self, fields: List[str]):
         if not fields:

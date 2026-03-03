@@ -32,6 +32,10 @@ from tools.erp import (
     get_product_stock,
     check_product_availability,
     get_stock_location,
+    get_sale_order,
+    get_sale_order_lines,
+    create_sale_order,
+    get_customer_order_history,
 )
 
 # ------------------------------------------------------------------------------
@@ -568,6 +572,121 @@ def get_stock_location_tool(
         location_id=location_id,
         name=name,
         limit=limit,
+    )
+
+
+# ------------------------------------------------------------------
+# section 5: tool 21 - get_sale_order
+# ------------------------------------------------------------------
+
+@mcp.tool(
+    name="get_sale_order",
+    description=(
+        "Fetch sales orders from Odoo (read-only).\n\n"
+        "Supports filtering by order_id, name, customer, state, "
+        "or date range.\n"
+        "At least one filter is required.\n"
+        "Company-scoped automatically."
+    ),
+)
+def get_sale_order_tool(
+    order_id: int | None = None,
+    name: str | None = None,
+    partner_id: int | None = None,
+    state: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    limit: int = 10,
+):
+    return get_sale_order(
+        order_id=order_id,
+        name=name,
+        partner_id=partner_id,
+        state=state,
+        date_from=date_from,
+        date_to=date_to,
+        limit=limit,
+    )
+
+# ------------------------------------------------------------------
+# section 5: tool 22 - get_sale_order_lines
+# ------------------------------------------------------------------
+
+@mcp.tool(
+    name="get_sale_order_lines",
+    description=(
+        "Fetch line items of a specific sales order.\n\n"
+        "Requires order_id.\n"
+        "Returns product details, quantity, price, and totals.\n"
+        "Company-scoped automatically."
+    ),
+)
+def get_sale_order_lines_tool(
+    order_id: int,
+    limit: int = 100,
+):
+    return get_sale_order_lines(
+        order_id=order_id,
+        limit=limit,
+    )
+
+# ------------------------------------------------------------------
+# section 5: tool 23 - create_sale_order (WRITE)
+# ------------------------------------------------------------------
+
+@mcp.tool(
+    name="create_sale_order",
+    description=(
+        "Create a new sales order in Odoo.\n\n"
+        "Creates order in draft state only.\n"
+        "Price is derived from product list_price.\n"
+        "Manual price override is not allowed.\n\n"
+        "Validates:\n"
+        "- Customer exists and is active\n"
+        "- Products are sellable and active\n"
+        "- Quantity is positive\n"
+        "- No duplicate products\n"
+        "- Date formats are correct\n"
+        "- validity_date cannot be before date_order\n\n"
+        "Returns order summary and line breakdown.\n"
+        "Human confirmation is required before processing."
+    ),
+)
+def create_sale_order_tool(
+    partner_id: int,
+    order_lines: list,
+    date_order: str | None = None,
+    validity_date: str | None = None,
+    client_order_ref: str | None = None,
+):
+    return create_sale_order(
+        partner_id=partner_id,
+        order_lines=order_lines,
+        date_order=date_order,
+        validity_date=validity_date,
+        client_order_ref=client_order_ref,
+    )
+
+# ------------------------------------------------------------------
+# section 5: tool 24 - get_customer_order_history
+# ------------------------------------------------------------------
+
+@mcp.tool(
+    name="get_customer_order_history",
+    description=(
+        "Fetch full sales history for a specific customer.\n\n"
+        "Returns paginated order list (latest 100 max) and accurate\n"
+        "analytics including total orders, revenue (confirmed only),\n"
+        "average order value, most recent order dates, and state breakdown.\n\n"
+        "Requires partner_id (must be a valid customer).\n"
+        "Company-scoped automatically."
+    ),
+)
+def get_customer_order_history_tool(
+    partner_id: int,
+):
+    return get_customer_order_history(
+        partner_id=partner_id,
     )
 
 # ------------------------------------------------------------------------------
