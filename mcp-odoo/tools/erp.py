@@ -1567,3 +1567,379 @@ def get_customer_order_history(
             "state_breakdown": state_breakdown,
         },
     }
+
+#section 6: tool 25 - get purchase order
+def get_purchase_order(
+    *,
+    order_id: Optional[int] = None,
+    partner_id: Optional[int] = None,
+    state: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    limit: int = 10,
+) -> List[Dict[str, Any]]:
+    """
+    Tool ID: 025
+    Model: purchase.order
+    Risk: LOW (Read Only)
+
+    Returns purchase orders matching the given filters.
+    Company scope enforced at OdooClient connection level.
+    """
+
+    client = OdooClient()
+
+    # ------------------------------------------------------------------
+    # Validate limit
+    # ------------------------------------------------------------------
+    if limit > 100:
+        raise ValidationError("Limit cannot exceed 100.")
+
+    # ------------------------------------------------------------------
+    # Validate state
+    # ------------------------------------------------------------------
+    allowed_states = ["draft", "sent", "to approve", "purchase", "done", "cancel"]
+    if state and state not in allowed_states:
+        raise ValidationError(
+            f"Invalid state '{state}'. Allowed: {allowed_states}"
+        )
+
+    # ------------------------------------------------------------------
+    # Validate date formats
+    # ------------------------------------------------------------------
+    if date_from:
+        try:
+            datetime.date.fromisoformat(date_from)
+        except ValueError:
+            raise ValidationError("date_from must be in YYYY-MM-DD format.")
+
+    if date_to:
+        try:
+            datetime.date.fromisoformat(date_to)
+        except ValueError:
+            raise ValidationError("date_to must be in YYYY-MM-DD format.")
+
+    if date_from and date_to and date_to < date_from:
+        raise ValidationError("date_to cannot be before date_from.")
+
+    # ------------------------------------------------------------------
+    # Build domain
+    # ------------------------------------------------------------------
+    domain = []
+
+    if order_id:
+        domain.append(("id", "=", order_id))
+    if partner_id:
+        domain.append(("partner_id", "=", partner_id))
+    if state:
+        domain.append(("state", "=", state))
+    if date_from:
+        domain.append(("date_planned", ">=", date_from))
+    if date_to:
+        domain.append(("date_planned", "<=", date_to))
+
+    if not domain:
+        raise ValidationError("At least one filter is required.")
+
+    # ------------------------------------------------------------------
+    # Allowed READ fields — strict allowlist per safety policy
+    # ------------------------------------------------------------------
+    records = client.search_read(
+        model="purchase.order",
+        domain=domain,
+        fields=[
+            "id",
+            "name",
+            "partner_id",
+            "date_order",
+            "date_planned",
+            "amount_total",
+            "state",
+        ],
+        limit=limit,
+    )
+
+    # ------------------------------------------------------------------
+    # Normalize Many2one fields
+    # ------------------------------------------------------------------
+    for r in records:
+        if r.get("partner_id"):
+            r["partner_name"] = r["partner_id"][1]
+            r["partner_id"] = r["partner_id"][0]
+
+    return records
+
+#section 6: tool 26 - get purchase order lines
+def get_purchase_order_lines(
+    *,
+    order_id: int,
+    limit: int = 100,
+) -> List[Dict[str, Any]]:
+    """
+    Tool ID: 026
+    Model: purchase.order.line
+    Risk: LOW (Read Only)
+
+    Returns all line items for a given purchase order.
+    Company scope enforced at OdooClient connection level.
+
+    Derived fields (computed during normalization):
+        - product_name: human-readable product name (from product_id)
+
+    Raises:
+        ValidationError: if order_id is missing or order does not exist.
+    """
+
+    client = OdooClient()
+
+    # ------------------------------------------------------------------
+    # Validate inputs
+    # ------------------------------------------------------------------
+    if not order_id:
+        raise ValidationError("order_id is required.")
+
+    if limit > 100:
+        raise ValidationError("Limit cannot exceed 100.")
+
+    # ------------------------------------------------------------------
+    # Validate parent order exists
+    # ------------------------------------------------------------------
+    parent = client.search_read(
+        model="purchase.order",
+        domain=[("id", "=", order_id)],
+        fields=["id", "name", "state"],
+        limit=1,
+    )
+
+    if not parent:
+        raise ValidationError(
+            f"Purchase order with id {order_id} does not exist "
+            "or is not accessible."
+        )
+
+    # ------------------------------------------------------------------
+    # Allowed READ fields — strict allowlist per safety policy
+    # ------------------------------------------------------------------
+    records = client.search_read(
+        model="purchase.order.line",
+        domain=[("order_id", "=", order_id)],
+        fields=[
+            "id",
+            "order_id",
+            "product_id",
+            "product_qty",
+            "price_unit",
+            "date_planned",
+        ],
+        limit=limit,
+    )
+
+    # ------------------------------------------------------------------
+    # Normalize Many2one fields
+    # ------------------------------------------------------------------
+    for r in records:
+        if r.get("product_id"):
+            r["product_name"] = r["product_id"][1]
+            r["product_id"] = r["product_id"][0]
+
+        if r.get("order_id"):
+            r["order_id"] = r["order_id"][0]
+
+    return records
+
+
+#section 6: tol 27 - check material availability
+# tools/purchasing/check_material_availability.py
+
+import datetime
+from typing import Dict, Any, Optional
+from odoo_client import OdooClient, ValidationError
+
+
+def check_material_availability(
+    *,
+    product_id: int,
+    quantity_needed: float,
+    date_needed: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Tool ID: 027
+    Model: stock.quant + purchase.order.line (Composite Read)
+    Risk: LOW (Read Only)
+
+    Checks if a product can be fulfilled from current stock
+    plus incoming approved purchase orders.
+
+    All quantity calculations are performed server-side via read_group
+    and search_count — never affected by the 100-record display limit.
+
+    Args:
+        product_id:      Product to check (must be active)
+        quantity_needed: Required quantity (must be positive)
+        date_needed:     Optional — filters incoming POs arriving
+                         on or before this date for qty calculation.
+                         Expected date always looks beyond this if needed.
+
+    Returns:
+        {
+            product_id, product_name,
+            current_stock,
+            incoming_qty,            # server-side sum, always accurate
+            total_available,
+            quantity_needed,
+            can_fulfill,
+            shortage,
+            expected_available_date  # always accurate, no truncation
+        }
+    """
+
+    client = OdooClient()
+
+    # ------------------------------------------------------------------
+    # Validate inputs
+    # ------------------------------------------------------------------
+    if not product_id:
+        raise ValidationError("product_id is required.")
+
+    if quantity_needed <= 0:
+        raise ValidationError("quantity_needed must be positive.")
+
+    if date_needed:
+        try:
+            datetime.date.fromisoformat(date_needed)
+        except ValueError:
+            raise ValidationError(
+                "date_needed must be in YYYY-MM-DD format."
+            )
+
+    # ------------------------------------------------------------------
+    # Validate product exists and is active
+    # ------------------------------------------------------------------
+    product = client.search_read(
+        model="product.product",
+        domain=[
+            ("id", "=", product_id),
+            ("active", "=", True),
+        ],
+        fields=["id", "name"],
+        limit=1,
+    )
+
+    if not product:
+        raise ValidationError(
+            f"Product {product_id} does not exist or is archived."
+        )
+
+    product_name = product[0]["name"]
+
+    # ------------------------------------------------------------------
+    # Current stock — server-side sum via read_group
+    # quantity > 0 enforced per safety policy
+    # Never truncated — aggregated on server across all locations
+    # ------------------------------------------------------------------
+    stock_agg = client.read_group(
+        model="stock.quant",
+        domain=[
+            ("product_id", "=", product_id),
+            ("location_id.usage", "=", "internal"),
+            ("quantity", ">", 0),
+        ],
+        fields=["quantity:sum", "reserved_quantity:sum"],
+        groupby=[],
+    )
+
+    total_qty = stock_agg[0].get("quantity", 0.0) or 0.0 if stock_agg else 0.0
+    reserved = stock_agg[0].get("reserved_quantity", 0.0) or 0.0 if stock_agg else 0.0
+    current_stock = total_qty - reserved
+
+    # ------------------------------------------------------------------
+    # Incoming qty — server-side sum via read_group
+    # Filtered by date_needed if provided
+    # Never truncated — Odoo sums all matching lines on server
+    # ------------------------------------------------------------------
+    po_domain_filtered = [
+        ("product_id", "=", product_id),
+        ("order_id.state", "=", "purchase"),
+    ]
+
+    if date_needed:
+        po_domain_filtered.append(("date_planned", "<=", date_needed))
+
+    incoming_agg = client.read_group(
+        model="purchase.order.line",
+        domain=po_domain_filtered,
+        fields=["product_qty:sum"],
+        groupby=[],
+    )
+
+    incoming_qty = (
+        incoming_agg[0].get("product_qty", 0.0) or 0.0
+        if incoming_agg else 0.0
+    )
+
+    # ------------------------------------------------------------------
+    # Total availability
+    # ------------------------------------------------------------------
+    total_available = current_stock + incoming_qty
+    can_fulfill = total_available >= quantity_needed
+    shortage = round(max(quantity_needed - total_available, 0), 2)
+
+    # ------------------------------------------------------------------
+    # Expected availability date
+    # Uses read_group grouped by date_planned — server-side, no truncation
+    # NO date filter here — must look beyond date_needed if needed
+    # Walks date groups cumulatively until quantity_needed is reached
+    # ------------------------------------------------------------------
+    expected_available_date = None
+
+    if not can_fulfill:
+
+        date_groups = client.read_group(
+            model="purchase.order.line",
+            domain=[
+                ("product_id", "=", product_id),
+                ("order_id.state", "=", "purchase"),
+            ],
+            fields=["product_qty:sum", "date_planned"],
+            groupby=["date_planned"],
+        )
+
+        if date_groups:
+
+            # Normalize and sort by date ascending
+            def normalize_date(raw):
+                if not raw:
+                    return "9999-12-31"
+                return str(raw).split(" ")[0].split("T")[0]
+
+            sorted_groups = sorted(
+                date_groups,
+                key=lambda x: normalize_date(x.get("date_planned")),
+            )
+
+            running_total = current_stock
+
+            for group in sorted_groups:
+                running_total += group.get("product_qty") or 0
+
+                if running_total >= quantity_needed:
+                    raw_date = group.get("date_planned")
+                    expected_available_date = normalize_date(raw_date)
+                    if expected_available_date == "9999-12-31":
+                        expected_available_date = None
+                    break
+
+    # ------------------------------------------------------------------
+    # Return
+    # ------------------------------------------------------------------
+    return {
+        "product_id": product_id,
+        "product_name": product_name,
+        "current_stock": round(current_stock, 2),
+        "incoming_qty": round(incoming_qty, 2),
+        "total_available": round(total_available, 2),
+        "quantity_needed": quantity_needed,
+        "can_fulfill": can_fulfill,
+        "shortage": shortage,
+        "expected_available_date": expected_available_date,
+    }

@@ -728,7 +728,7 @@ SECTION 6: PURCHASING / PROCUREMENT
 Risk Level: LOW (Read Only) - No purchase order creation
 
 ────────────────────────────────────────────────────────────────────────────────
-Tool ID: 025
+✅Tool ID: 025
 Tool Name: get_purchase_order
 ────────────────────────────────────────────────────────────────────────────────
 Model: purchase.order
@@ -754,7 +754,7 @@ Why Required:
   receive materials needed for manufacturing?"
 
 ────────────────────────────────────────────────────────────────────────────────
-Tool ID: 026
+✅Tool ID: 026
 Tool Name: get_purchase_order_lines
 ────────────────────────────────────────────────────────────────────────────────
 Model: purchase.order.line
@@ -773,7 +773,7 @@ Why Required:
   Understanding what materials are incoming and when.
 
 ────────────────────────────────────────────────────────────────────────────────
-Tool ID: 027
+✅Tool ID: 027
 Tool Name: check_material_availability
 ────────────────────────────────────────────────────────────────────────────────
 Model: stock.quant + purchase.order (COMPOSITE TOOL)
@@ -805,7 +805,7 @@ Why Required:
 
 
 ================================================================================
-SECTION 7: MANUFACTURING (If MRP Module Installed)
+SECTION 7: MANUFACTURING
 ================================================================================
 Risk Level: LOW (Read Only) - No production order creation
 

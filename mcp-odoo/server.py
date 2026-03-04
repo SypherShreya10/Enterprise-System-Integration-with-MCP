@@ -36,6 +36,9 @@ from tools.erp import (
     get_sale_order_lines,
     create_sale_order,
     get_customer_order_history,
+    get_purchase_order,
+    get_purchase_order_lines,
+    check_material_availability,
 )
 
 # ------------------------------------------------------------------------------
@@ -687,6 +690,90 @@ def get_customer_order_history_tool(
 ):
     return get_customer_order_history(
         partner_id=partner_id,
+    )
+
+# ------------------------------------------------------------------
+# section 6: tool 25 - get_purchase_order
+# ------------------------------------------------------------------
+
+@mcp.tool(
+    name="get_purchase_order",
+    description=(
+        "Fetch purchase orders from Odoo (read-only).\n\n"
+        "Supports filtering by order_id, supplier (partner_id), "
+        "state, or expected delivery date range.\n"
+        "At least one filter is required.\n"
+        "Company-scoped automatically."
+    ),
+)
+def get_purchase_order_tool(
+    order_id: int | None = None,
+    partner_id: int | None = None,
+    state: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    limit: int = 10,
+):
+    return get_purchase_order(
+        order_id=order_id,
+        partner_id=partner_id,
+        state=state,
+        date_from=date_from,
+        date_to=date_to,
+        limit=limit,
+    )
+
+# ------------------------------------------------------------------
+# section 6: tool 26 - get_purchase_order_lines
+# ------------------------------------------------------------------
+
+@mcp.tool(
+    name="get_purchase_order_lines",
+    description=(
+        "Fetch line items of a specific purchase order.\n\n"
+        "Requires order_id.\n"
+        "Returns product details, quantity ordered, price, "
+        "and expected delivery date.\n"
+        "Company-scoped automatically."
+    ),
+)
+def get_purchase_order_lines_tool(
+    order_id: int,
+    limit: int = 100,
+):
+    return get_purchase_order_lines(
+        order_id=order_id,
+        limit=limit,
+    )
+
+# ------------------------------------------------------------------
+# section 6: tool 27 - check_material_availability
+# ------------------------------------------------------------------
+
+@mcp.tool(
+    name="check_material_availability",
+    description=(
+        "Check if required raw materials are available for manufacturing.\n\n"
+        "Composite tool combining:\n"
+        "- Current stock levels (stock.quant)\n"
+        "- Incoming approved purchase orders (purchase.order.line)\n\n"
+        "Returns stock availability summary including:\n"
+        "current_stock, incoming_qty, total_available, shortage,\n"
+        "and expected_available_date if supply is insufficient.\n\n"
+        "Use cases:\n"
+        "'Do we have enough raw materials to manufacture 100 units?'\n"
+        "'When will materials be available for production?'"
+    ),
+)
+def check_material_availability_tool(
+    product_id: int,
+    quantity_needed: float,
+    date_needed: str | None = None,
+):
+    return check_material_availability(
+        product_id=product_id,
+        quantity_needed=quantity_needed,
+        date_needed=date_needed,
     )
 
 # ------------------------------------------------------------------------------

@@ -163,20 +163,26 @@ Allowed Operations:
 - read
 
 Allowed Fields:
+- id
 - name
 - partner_id
 - date_order
+- date_planned
 - amount_total
 - state
 
 Forbidden Fields:
 - approval metadata
 - internal vendor ratings
+- approval_date
+- approver_id
+- vendor_rating
+- message_ids
 
 Domain Restrictions:
 - company_id = current_company
 
----
+--
 
 ## Manufacturing (MRP)
 
