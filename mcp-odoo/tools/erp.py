@@ -1943,3 +1943,553 @@ def check_material_availability(
         "shortage": shortage,
         "expected_available_date": expected_available_date,
     }
+
+#section 7: tool 28 - get manufacturing order
+def get_manufacturing_order(
+    *,
+    production_id: Optional[int] = None,
+    product_id: Optional[int] = None,
+    state: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    limit: int = 10,
+) -> List[Dict[str, Any]]:
+
+    client = OdooClient()
+
+    if limit > 100:
+        raise ValidationError("Limit cannot exceed 100.")
+
+    if production_id:
+        limit = 1
+
+    allowed_states = ["draft", "confirmed", "progress", "done", "cancel"]
+
+    if state and state not in allowed_states:
+        raise ValidationError(
+            f"Invalid state '{state}'. Allowed: {allowed_states}"
+        )
+
+    if date_from:
+        try:
+            datetime.date.fromisoformat(date_from)
+        except ValueError:
+            raise ValidationError("date_from must be YYYY-MM-DD")
+
+    if date_to:
+        try:
+            datetime.date.fromisoformat(date_to)
+        except ValueError:
+            raise ValidationError("date_to must be YYYY-MM-DD")
+
+    if date_from and date_to and date_to < date_from:
+        raise ValidationError("date_to cannot be before date_from")
+
+    domain = []
+
+    if production_id:
+        domain.append(("id", "=", production_id))
+
+    if product_id:
+        domain.append(("product_id", "=", product_id))
+
+    if state:
+        domain.append(("state", "=", state))
+
+    if date_from:
+        domain.append(("date_start", ">=", date_from))
+
+    if date_to:
+        domain.append(("date_start", "<=", date_to))
+
+    if not domain:
+        raise ValidationError(
+            "At least one filter required."
+        )
+
+    records = client.search_read(
+        model="mrp.production",
+        domain=domain,
+        fields=[
+            "id",
+            "name",
+            "product_id",
+            "product_qty",
+            "qty_produced",
+            "date_start",
+            "date_finished",
+            "state",
+        ],
+        limit=limit,
+    )
+
+    for r in records:
+
+        if r.get("product_id"):
+            r["product_name"] = r["product_id"][1]
+            r["product_id"] = r["product_id"][0]
+
+        produced = r.get("qty_produced") or 0
+        planned = r.get("product_qty") or 0
+
+        remaining = max(planned - produced, 0)
+
+        r["remaining_qty"] = round(remaining, 2)
+
+    return records
+
+#section 7: tool 29 - check manufacturing capacity
+def check_manufacturing_capacity(
+    *,
+    date_from: str,
+    date_to: str,
+    theoretical_capacity: Optional[float] = None,
+) -> Dict[str, Any]:
+
+    client = OdooClient()
+
+    try:
+        datetime.date.fromisoformat(date_from)
+        datetime.date.fromisoformat(date_to)
+    except ValueError:
+        raise ValidationError("Dates must be YYYY-MM-DD")
+
+    if date_to < date_from:
+        raise ValidationError("date_to cannot be before date_from")
+
+    base_domain = [
+        ("date_start", ">=", date_from),
+        ("date_start", "<=", date_to),
+        ("state", "in", ["confirmed", "progress"]),
+    ]
+
+    # ------------------------------------------------
+    # Aggregate total planned production (server-side)
+    # ------------------------------------------------
+
+    agg = client.read_group(
+        model="mrp.production",
+        domain=base_domain,
+        fields=["product_qty:sum"],
+        groupby=[],
+    )
+
+    total_planned = (
+        agg[0].get("product_qty", 0.0)
+        if agg else 0.0
+    )
+
+    # ------------------------------------------------
+    # Accurate order count
+    # ------------------------------------------------
+
+    scheduled_orders = client.search_count(
+        model="mrp.production",
+        domain=base_domain,
+    )
+
+    # ------------------------------------------------
+    # Capacity calculations
+    # ------------------------------------------------
+
+    estimated_capacity_used = None
+    available_capacity = None
+
+    if theoretical_capacity:
+
+        if theoretical_capacity <= 0:
+            raise ValidationError("theoretical_capacity must be positive")
+
+        estimated_capacity_used = round(
+            (total_planned / theoretical_capacity) * 100,
+            2
+        )
+
+        available_capacity = round(
+            max(theoretical_capacity - total_planned, 0),
+            2
+        )
+
+    return {
+        "date_range": {
+            "from": date_from,
+            "to": date_to,
+        },
+        "scheduled_orders": scheduled_orders,
+        "total_scheduled_qty": round(total_planned, 2),
+        "theoretical_capacity": theoretical_capacity,
+        "estimated_capacity_used": estimated_capacity_used,
+        "available_capacity": available_capacity,
+    }
+
+#section 7: tool 30 - get bill of materials
+def get_bill_of_materials(
+    *,
+    product_id: int,
+) -> Dict[str, Any]:
+
+    client = OdooClient()
+
+    if not product_id:
+        raise ValidationError("product_id is required")
+
+    product = client.search_read(
+        model="product.product",
+        domain=[
+            ("id", "=", product_id),
+            ("active", "=", True),
+        ],
+        fields=["id", "name", "product_tmpl_id"],
+        limit=1,
+    )
+
+    if not product:
+        raise ValidationError(
+            f"Product {product_id} does not exist."
+        )
+
+    product_name = product[0]["name"]
+    template_id = product[0]["product_tmpl_id"][0]
+
+    bom_count = client.search_count(
+        model="mrp.bom",
+        domain=[
+            ("product_tmpl_id", "=", template_id),
+            ("type", "=", "normal"),
+        ],
+    )
+
+    if bom_count == 0:
+        return {
+            "product_id": product_id,
+            "product_name": product_name,
+            "bom_id": None,
+            "bom_qty": None,
+            "multiple_boms": False,
+            "components_truncated": False,
+            "bom_line_ids": [],
+        }
+
+    bom = client.search_read(
+        model="mrp.bom",
+        domain=[
+            ("product_tmpl_id", "=", template_id),
+            ("type", "=", "normal"),
+        ],
+        fields=["id", "product_qty"],
+        limit=1,
+    )
+
+    bom_id = bom[0]["id"]
+    bom_qty = bom[0].get("product_qty", 1)
+
+    line_count = client.search_count(
+        model="mrp.bom.line",
+        domain=[("bom_id", "=", bom_id)],
+    )
+
+    lines = client.search_read(
+        model="mrp.bom.line",
+        domain=[("bom_id", "=", bom_id)],
+        fields=["product_id", "product_qty"],
+        limit=100,
+    )
+
+    components = []
+
+    for l in lines:
+
+        comp_id = None
+        comp_name = None
+
+        if l.get("product_id"):
+            comp_id = l["product_id"][0]
+            comp_name = l["product_id"][1]
+
+        qty = l.get("product_qty") or 0
+
+        components.append({
+            "component_id": comp_id,
+            "component_name": comp_name,
+            "product_qty": qty,
+            "component_per_unit": round(qty / bom_qty, 6) if bom_qty else None
+        })
+
+    return {
+        "product_id": product_id,
+        "product_name": product_name,
+        "bom_id": bom_id,
+        "bom_qty": bom_qty,
+        "multiple_boms": bom_count > 1,
+        "components_truncated": line_count > 100,
+        "bom_line_ids": components,
+    }
+
+#section 7: tool 31 - check manufacturing feasibility
+def check_manufacturing_feasibility(
+    *,
+    product_id: int,
+    quantity: float,
+    date_needed: Optional[str] = None,
+    theoretical_capacity: Optional[float] = None,
+) -> Dict[str, Any]:
+
+    if not product_id:
+        raise ValidationError("product_id is required.")
+
+    if quantity <= 0:
+        raise ValidationError("quantity must be positive.")
+
+    # ------------------------------------------------
+    # STEP 1 — Fetch BOM
+    # ------------------------------------------------
+
+    bom = get_bill_of_materials(product_id=product_id)
+
+    if not bom["bom_id"]:
+        return {
+            "feasible": False,
+            "reason": "no_bom_defined",
+            "materials": [],
+            "blocking_components": [],
+            "max_producible_quantity": 0,
+            "capacity": None,
+        }
+
+    components = bom.get("bom_line_ids", [])
+
+    material_results = []
+    blocking_components = []
+
+    max_producible = float("inf")
+    latest_material_date = None
+
+    # ------------------------------------------------
+    # STEP 2 — Evaluate each component
+    # ------------------------------------------------
+
+    for comp in components:
+
+        comp_id = comp.get("component_id")
+        comp_name = comp.get("component_name")
+
+        if not comp_id:
+            continue
+
+        per_unit = comp.get("component_per_unit") or 0
+        required_qty = round(per_unit * quantity, 2)
+
+        availability = check_material_availability(
+            product_id=comp_id,
+            quantity_needed=required_qty,
+            date_needed=date_needed,
+        )
+
+        available_total = availability.get("total_available", 0)
+
+        result = {
+            "component_id": comp_id,
+            "component_name": comp_name,
+            "required_qty": required_qty,
+            "available_now": availability.get("current_stock", 0),
+            "incoming_qty": availability.get("incoming_qty", 0),
+            "total_available": available_total,
+            "can_fulfill": availability.get("can_fulfill", False),
+            "shortage": availability.get("shortage", 0),
+        }
+
+        material_results.append(result)
+
+        # ------------------------------------------------
+        # Bottleneck detection
+        # ------------------------------------------------
+
+        if per_unit > 0:
+            possible_units = available_total / per_unit
+            max_producible = min(max_producible, possible_units)
+
+        if not availability.get("can_fulfill", False):
+
+            expected_date = availability.get("expected_available_date")
+
+            blocking_components.append({
+                "component_id": comp_id,
+                "component_name": comp_name,
+                "shortage": availability.get("shortage", 0),
+                "expected_available_date": expected_date,
+            })
+
+            if expected_date:
+                if (
+                    latest_material_date is None
+                    or expected_date > latest_material_date
+                ):
+                    latest_material_date = expected_date
+
+    if max_producible == float("inf"):
+        max_producible = 0
+    else:
+        max_producible = int(max_producible)
+
+    # ------------------------------------------------
+    # STEP 3 — Material feasibility
+    # ------------------------------------------------
+
+    if blocking_components:
+
+        return {
+            "feasible": False,
+            "reason": "material_shortage",
+            "materials": material_results,
+            "blocking_components": blocking_components,
+            "max_producible_quantity": max_producible,
+            "materials_ready_date": latest_material_date,
+            "capacity": None,
+        }
+
+    # ------------------------------------------------
+    # STEP 4 — Capacity analysis
+    # ------------------------------------------------
+
+    capacity = None
+
+    if date_needed and theoretical_capacity:
+
+        capacity = check_manufacturing_capacity(
+            date_from=date_needed,
+            date_to=date_needed,
+            theoretical_capacity=theoretical_capacity,
+        )
+
+        if capacity.get("available_capacity") is not None:
+
+            if capacity["available_capacity"] < quantity:
+
+                return {
+                    "feasible": False,
+                    "reason": "insufficient_capacity",
+                    "materials": material_results,
+                    "blocking_components": [],
+                    "max_producible_quantity": max_producible,
+                    "capacity": capacity,
+                }
+
+    # ------------------------------------------------
+    # STEP 5 — Success
+    # ------------------------------------------------
+
+    return {
+        "feasible": True,
+        "reason": None,
+        "materials": material_results,
+        "blocking_components": [],
+        "max_producible_quantity": max_producible,
+        "capacity": capacity,
+    }
+
+# section 7: tool 32 - explode bill of materials
+
+def explode_bill_of_materials(
+    *,
+    product_id: int,
+    quantity: float = 1,
+    depth: int = 5,
+    _bom_cache: Optional[Dict[int, Dict[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
+
+    if depth <= 0:
+        return []
+
+    if _bom_cache is None:
+        _bom_cache = {}
+
+    # ------------------------------------------------
+    # Fetch BOM (with caching)
+    # ------------------------------------------------
+
+    try:
+
+        if product_id in _bom_cache:
+            bom = _bom_cache[product_id]
+        else:
+            bom = get_bill_of_materials(product_id=product_id)
+            _bom_cache[product_id] = bom
+
+    except ValidationError:
+        return []
+
+    if not bom.get("bom_id"):
+        return []
+
+    exploded_components: Dict[int, Dict[str, Any]] = {}
+
+    # ------------------------------------------------
+    # Expand BOM
+    # ------------------------------------------------
+
+    for comp in bom.get("bom_line_ids", []):
+
+        comp_id = comp.get("component_id")
+        comp_name = comp.get("component_name")
+        per_unit = comp.get("component_per_unit") or 0
+
+        if not comp_id:
+            continue
+
+        required_qty = per_unit * quantity
+
+        # ------------------------------------------------
+        # Check if component has its own BOM
+        # ------------------------------------------------
+
+        try:
+
+            if comp_id in _bom_cache:
+                sub_bom = _bom_cache[comp_id]
+            else:
+                sub_bom = get_bill_of_materials(product_id=comp_id)
+                _bom_cache[comp_id] = sub_bom
+
+        except ValidationError:
+            continue
+
+        if sub_bom.get("bom_id"):
+
+            sub_components = explode_bill_of_materials(
+                product_id=comp_id,
+                quantity=required_qty,
+                depth=depth - 1,
+                _bom_cache=_bom_cache,
+            )
+
+            for sc in sub_components:
+
+                cid = sc["component_id"]
+
+                if cid not in exploded_components:
+
+                    exploded_components[cid] = {
+                        "component_id": cid,
+                        "component_name": sc["component_name"],
+                        "required_qty": sc["required_qty"],
+                    }
+
+                else:
+
+                    exploded_components[cid]["required_qty"] += sc["required_qty"]
+
+        else:
+
+            if comp_id not in exploded_components:
+
+                exploded_components[comp_id] = {
+                    "component_id": comp_id,
+                    "component_name": comp_name,
+                    "required_qty": round(required_qty, 2),
+                }
+
+            else:
+
+                exploded_components[comp_id]["required_qty"] += round(required_qty, 2)
+
+    return list(exploded_components.values())

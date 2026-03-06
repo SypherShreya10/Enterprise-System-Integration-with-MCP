@@ -24,7 +24,7 @@ It MUST NOT be interpreted or bypassed by the AI agent.
 
 ### Query Limits
 - Maximum records per request: 100
-- Pagination is mandatory for larger result sets
+- Pagination OR server-side aggregation must be used for large result sets.
 - Full table scans are forbidden
 
 ### Operation Safety
@@ -56,6 +56,7 @@ Allowed Fields:
 - default_code
 - list_price
 - type
+- product_tmpl_id
 
 Forbidden Fields:
 - cost fields
@@ -184,6 +185,28 @@ Domain Restrictions:
 
 --
 
+### Model: purchase.order.line
+
+Allowed Operations:
+- read
+
+Allowed Fields:
+- id
+- order_id
+- product_id
+- product_qty
+- qty_received
+- date_planned
+
+Forbidden Fields:
+- price_subtotal
+- price_total
+- vendor discounts
+- tax metadata
+
+Domain Restrictions:
+- company_id = current_company
+
 ## Manufacturing (MRP)
 
 ### Model: mrp.production
@@ -192,15 +215,27 @@ Allowed Operations:
 - read
 
 Allowed Fields:
-- name
-- product_id
-- product_qty
-- state
-- date_planned_start
+-id
+-name
+-product_id
+-product_qty
+-qty_produced
+-date_start
+-date_finished
+-state
+
+Allowed State Values:
+-draft
+-confirmed
+-progress
+-done
+-cancel
 
 Forbidden Fields:
-- cost breakdown
-- internal routing logic
+-cost breakdown
+-internal routing logic
+-workorder_ids
+-production_cost
 
 Domain Restrictions:
 - company_id = current_company
@@ -213,14 +248,34 @@ Allowed Operations:
 - read
 
 Allowed Fields:
+- id
 - product_tmpl_id
 - product_qty
 - type
 
 Forbidden Fields:
-- internal versioning metadata
+- cost breakdown
+- internal routing logic
+- versioning metadata
 
 ---
+
+### Model: mrp.bom.line
+
+Allowed Operations:
+-read
+
+Allowed Fields:
+-product_id
+-product_qty
+-bom_id
+
+Forbidden Fields:
+-cost fields
+-internal routing logic
+
+Domain Restrictions:
+- company_id = current_company (inherited via bom_id)
 
 ## Accounting / Finance
 

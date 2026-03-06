@@ -39,6 +39,13 @@ from tools.erp import (
     get_purchase_order,
     get_purchase_order_lines,
     check_material_availability,
+
+    #Manufacturing tools:
+    get_manufacturing_order,
+    check_manufacturing_capacity,
+    get_bill_of_materials,
+    check_manufacturing_feasibility,
+    explode_bill_of_materials,
 )
 
 # ------------------------------------------------------------------------------
@@ -774,6 +781,133 @@ def check_material_availability_tool(
         product_id=product_id,
         quantity_needed=quantity_needed,
         date_needed=date_needed,
+    )
+
+# ------------------------------------------------------------------
+# section 7: tool 28 - get_manufacturing_order
+# ------------------------------------------------------------------
+
+@mcp.tool(
+    name="get_manufacturing_order",
+    description=(
+        "Fetch manufacturing orders from Odoo (read-only).\n\n"
+        "Supports filtering by production_id, product_id, state, "
+        "or production start date range.\n"
+        "Returns manufacturing progress including produced and remaining quantity."
+    ),
+)
+def get_manufacturing_order_tool(
+    production_id: int | None = None,
+    product_id: int | None = None,
+    state: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    limit: int = 10,
+):
+    return get_manufacturing_order(
+        production_id=production_id,
+        product_id=product_id,
+        state=state,
+        date_from=date_from,
+        date_to=date_to,
+        limit=limit,
+    )
+
+# ------------------------------------------------------------------
+# section 7: tool 29 - check_manufacturing_capacity
+# ------------------------------------------------------------------
+
+@mcp.tool(
+    name="check_manufacturing_capacity",
+    description=(
+        "Analyze manufacturing workload within a date range.\n\n"
+        "Calculates total scheduled production quantity and "
+        "compares it against theoretical capacity.\n\n"
+        "Returns capacity usage percentage and available capacity."
+    ),
+)
+def check_manufacturing_capacity_tool(
+    date_from: str,
+    date_to: str,
+    theoretical_capacity: float | None = None,
+):
+    return check_manufacturing_capacity(
+        date_from=date_from,
+        date_to=date_to,
+        theoretical_capacity=theoretical_capacity,
+    )
+
+# ------------------------------------------------------------------
+# section 7: tool 30 - get_bill_of_materials
+# ------------------------------------------------------------------
+
+@mcp.tool(
+    name="get_bill_of_materials",
+    description=(
+        "Fetch Bill of Materials (BOM) for a product.\n\n"
+        "Returns the BOM structure including component products "
+        "and required quantities per unit of the finished product.\n\n"
+        "Used for manufacturing planning and material analysis."
+    ),
+)
+def get_bill_of_materials_tool(
+    product_id: int,
+):
+    return get_bill_of_materials(
+        product_id=product_id,
+    )
+
+# ------------------------------------------------------------------
+# section 7: tool 31 - check_manufacturing_feasibility
+# ------------------------------------------------------------------
+
+@mcp.tool(
+    name="check_manufacturing_feasibility",
+    description=(
+        "Evaluate whether a product can be manufactured.\n\n"
+        "Combines:\n"
+        "- Bill of Materials analysis\n"
+        "- Raw material availability\n"
+        "- Manufacturing capacity\n\n"
+        "Returns feasibility status, blocking components, "
+        "maximum producible quantity, and capacity constraints."
+    ),
+)
+def check_manufacturing_feasibility_tool(
+    product_id: int,
+    quantity: float,
+    date_needed: str | None = None,
+    theoretical_capacity: float | None = None,
+):
+    return check_manufacturing_feasibility(
+        product_id=product_id,
+        quantity=quantity,
+        date_needed=date_needed,
+        theoretical_capacity=theoretical_capacity,
+    )
+
+# ------------------------------------------------------------------
+# section 7: tool 32 - explode_bill_of_materials
+# ------------------------------------------------------------------
+
+@mcp.tool(
+    name="explode_bill_of_materials",
+    description=(
+        "Recursively expand a Bill of Materials.\n\n"
+        "Breaks down a product into all required base components.\n"
+        "Supports recursive multi-level BOMs.\n\n"
+        "Useful for material planning and cost estimation."
+    ),
+)
+def explode_bill_of_materials_tool(
+    product_id: int,
+    quantity: float = 1,
+    depth: int = 5,
+):
+    return explode_bill_of_materials(
+        product_id=product_id,
+        quantity=quantity,
+        depth=depth,
     )
 
 # ------------------------------------------------------------------------------

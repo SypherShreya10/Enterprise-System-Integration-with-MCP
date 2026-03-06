@@ -810,7 +810,7 @@ SECTION 7: MANUFACTURING
 Risk Level: LOW (Read Only) - No production order creation
 
 ────────────────────────────────────────────────────────────────────────────────
-Tool ID: 028
+✅Tool ID: 028
 Tool Name: get_manufacturing_order
 ────────────────────────────────────────────────────────────────────────────────
 Model: mrp.production
@@ -836,7 +836,7 @@ Why Required:
   and timeline. Critical for "can we manufacture?" questions.
 
 ────────────────────────────────────────────────────────────────────────────────
-Tool ID: 029
+✅Tool ID: 029
 Tool Name: check_manufacturing_capacity
 ────────────────────────────────────────────────────────────────────────────────
 Model: mrp.production (AGGREGATION TOOL)
@@ -865,7 +865,7 @@ Why Required:
   knowing current capacity usage.
 
 ────────────────────────────────────────────────────────────────────────────────
-Tool ID: 030
+✅Tool ID: 030
 Tool Name: get_bill_of_materials
 ────────────────────────────────────────────────────────────────────────────────
 Model: mrp.bom
@@ -883,11 +883,107 @@ Returns:
 
 Why Required:
 Understanding material requirements for production planning.
+
+────────────────────────────────────────────────────────────────────────────────
+✅Tool ID: 031
+Tool Name: check_manufacturing_feasibility
+────────────────────────────────────────────────────────────────────────────────
+Model: mrp.bom + stock.quant + purchase.order.line + mrp.production (COMPOSITE TOOL)
+
+Purpose:
+Determine if a product can be manufactured within a given timeframe.
+
+Business Use Case:
+"Can we manufacture 200 units of Product X by next week?"
+
+Parameters:
+  - product_id (int, required): Product to manufacture
+  - quantity (float, required): Quantity required
+  - date_required (date, optional): Target completion date
+
+Returns:
+
+product_id
+product_name
+requested_quantity
+
+bom_available (boolean)
+
+material_analysis:
+  - materials_available (boolean)
+  - material_shortages: list of components with shortages
+
+capacity_analysis:
+  - scheduled_production_qty
+  - estimated_capacity_used
+  - available_capacity
+
+feasibility:
+  - can_manufacture (boolean)
+  - estimated_completion_date
+  - blocking_constraints (materials / capacity)
+
+Logic:
+  1. Fetch Bill of Materials for the product
+  2. Calculate material requirements
+  3. Check material availability via inventory and incoming purchases
+  4. Check production capacity using scheduled manufacturing orders
+  5. Combine results to determine feasibility
+
+Why Required:
+Central planning tool that answers the real business question:
+"Can we manufacture this order?"
+
+This combines material availability, production capacity,
+and bill of materials analysis in one call.
+
+────────────────────────────────────────────────────────────────────────────────
+✅Tool ID: 032
+Tool Name: explode_bill_of_materials
+────────────────────────────────────────────────────────────────────────────────
+Model: mrp.bom + mrp.bom.line
+
+Purpose:
+Recursively expand a product’s bill of materials to identify
+all raw material requirements.
+
+Business Use Case:
+"What raw materials are required to build Product X?"
+
+Parameters:
+  - product_id (int, required): Product to explode
+  - quantity (float, optional, default=1): Quantity of product
+  - depth (int, optional, default=5): Maximum recursion depth
+
+Returns:
+
+product_id
+exploded_components:
+  list of:
+    - component_id
+    - component_name
+    - required_qty
+
+Logic:
+  1. Retrieve product BOM
+  2. Multiply component quantities by requested product quantity
+  3. If a component itself has a BOM, recursively expand it
+  4. Continue until base components reached or depth limit hit
+
+Safety Controls:
+  - recursion depth limit prevents infinite loops
+  - read-only operations only
+
+Why Required:
+Many products contain sub-assemblies. This tool ensures the AI
+understands the full raw material requirement chain before
+checking availability or planning production.
+
 ================================================================================
 SECTION 8: ACCOUNTING / FINANCE
 Risk Level: LOW (Read Only) - No invoice or payment creation
 ────────────────────────────────────────────────────────────────────────────────
-Tool ID: 031
+Tool ID: 033
 Tool Name: get_customer_invoices
 ────────────────────────────────────────────────────────────────────────────────
 Model: account.move
@@ -919,7 +1015,7 @@ Why Required:
 Financial visibility. Understanding customer payment status,
 outstanding invoices, payment history.
 ────────────────────────────────────────────────────────────────────────────────
-Tool ID: 032
+Tool ID: 034
 Tool Name: check_customer_credit
 ────────────────────────────────────────────────────────────────────────────────
 Model: res.partner + account.move (COMPOSITE TOOL)
@@ -949,7 +1045,7 @@ Why Required:
 CRITICAL for order approval. Can't create orders for customers
 who exceeded credit limits. Prevents bad debt.
 ────────────────────────────────────────────────────────────────────────────────
-Tool ID: 033
+Tool ID: 035
 Tool Name: get_payment_history
 ────────────────────────────────────────────────────────────────────────────────
 Model: account.payment
@@ -971,7 +1067,7 @@ Credit risk assessment. Understanding if customer pays on time.
 SECTION 9: COMPOSITE / CROSS-DOMAIN TOOLS
 These tools combine data from multiple modules for complex business questions.
 ────────────────────────────────────────────────────────────────────────────────
-Tool ID: 034
+Tool ID: 036
 Tool Name: check_order_fulfillment_feasibility
 ────────────────────────────────────────────────────────────────────────────────
 Models: res.partner + product.product + stock.quant + sale.order +
@@ -1031,7 +1127,7 @@ problem statement: "Can we fulfill this order?"
 Without this, AI would need to make 10+ separate tool calls
 and manually synthesize the data. This tool does it in one call.
 ────────────────────────────────────────────────────────────────────────────────
-Tool ID: 035
+Tool ID: 037
 Tool Name: analyze_customer_relationship
 ────────────────────────────────────────────────────────────────────────────────
 Models: res.partner + crm.lead + sale.order + account.move
@@ -1061,13 +1157,13 @@ CRM:                        6 tools  (011-016)
 Inventory:                  4 tools  (017-020)
 Sales Orders:               4 tools  (021-024)
 Purchasing:                 3 tools  (025-027)
-Manufacturing:              3 tools  (028-030)
+Manufacturing:              3 tools  (028-032)
 Accounting:                 3 tools  (031-033)
 Composite/Analytics:        2 tools  (034-035)
 TOTAL:                     35 TOOLS
 Risk Breakdown:
 
-Read-only (Low Risk):    28 tools (80%)
+Read-only (Low Risk):    30 tools (80%)
 Create-only (Medium):     6 tools (17%)
 Update (High):            1 tool  (3%)
 Delete:                   0 tools (0%)

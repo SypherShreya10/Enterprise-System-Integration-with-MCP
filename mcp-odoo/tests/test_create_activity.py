@@ -6,7 +6,7 @@ would experience the tool, and prints real outputs exactly as an AI
 agent would see them.
 """
 
-from tools.crm import create_activity
+from tools.mail import create_activity
 from odoo_client import OdooClient
 import datetime
 import traceback

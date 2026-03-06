@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 client = OdooClient()
 
 
-# tool 1 - get partner
+#section 1: tool 1 - get partner
 def get_partner(
     *,
     partner_id: Optional[int] = None,
@@ -103,7 +103,7 @@ def get_partner(
         ) from exc
 
 
-# tool 2 - create partner
+#section 1: tool 2 - create partner
 def create_partner(
     *,
     name: str,
