@@ -65,7 +65,6 @@ mcp = FastMCP(
 )
 @secure_tool("get_partner")
 def get_partner_tool(
-    token: str,
     partner_id: int | None = None,
     name: str | None = None,
     email: str | None = None,
