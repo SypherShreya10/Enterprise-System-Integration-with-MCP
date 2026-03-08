@@ -6,11 +6,11 @@ token = input("Paste JWT token: ")
 
 result = create_partner_tool(
     token=token,
-    name="MCP partner 007",
-    email="mcppartner007@xyz.com",
+    name="MCP partner 010",
+    email="mcppartner010@xyz.com",
     phone="1234567890",
     is_customer=True,
-    city="Delhi"
+    city="Pune"
 )
 
 data = result 

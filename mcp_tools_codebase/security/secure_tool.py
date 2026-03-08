@@ -3,7 +3,7 @@
 
 import functools
 from auth.jwt_handler import verify_token
-from config.rbac_config import TOOL_PERMISSIONS
+from config.rbac_config import TOOL_PERMISSIONS, ROLE_HIERARCHY
 
 
 def secure_tool(tool_name: str):
@@ -38,19 +38,23 @@ def secure_tool(tool_name: str):
             user = payload.get("sub")
             print("USER ROLE:", user_role)
 
+            
             # -------------------------------------------------
             # STEP 3: RBAC Check
             # -------------------------------------------------
 
-            allowed_roles = TOOL_PERMISSIONS.get(tool_name)
+            required_roles = TOOL_PERMISSIONS.get(tool_name, [])
+            print(f"[SECURITY] Checking access for tool {tool_name}")
 
-            if not allowed_roles:
-                return {"error": "Tool permission not configured"}
+            if not required_roles:
+                return {"error": f"No permissions defined for tool {tool_name}"}
 
-            if user_role not in allowed_roles:
+            required_role = required_roles[0]
+
+            if ROLE_HIERARCHY[user_role] < ROLE_HIERARCHY[required_role]:
                 print(f"[SECURITY] user={user} role={user_role} tool={tool_name} → DENIED")
-                return {"error": f"Role '{user_role}' not allowed for {tool_name}"}
-            
+                raise Exception(f"Role '{user_role}' not allowed for {tool_name}")
+
             print(f"[SECURITY] user={user} role={user_role} tool={tool_name} → ALLOWED")
 
             # -------------------------------------------------
@@ -69,22 +73,19 @@ def secure_tool(tool_name: str):
 
 
 
-
-
-
-# import functools
+# from config.rbac_config import TOOL_PERMISSIONS, ROLE_HIERARCHY
 # from auth.jwt_handler import verify_token
-# from config.rbac_config import TOOL_PERMISSIONS
+# from functools import wraps
 
 
 # def secure_tool(tool_name):
 #     """
 #     Decorator to secure MCP tools using JWT + RBAC
 #     """
-
+    
 #     def decorator(func):
 
-#         @functools.wraps(func)
+#         @wraps(func)
 #         def wrapper(*args, **kwargs):
 
 #             token = kwargs.pop("token", None)
@@ -97,11 +98,14 @@ def secure_tool(tool_name: str):
 #             role = payload.get("role")
 #             user = payload.get("sub")
 
-#             print("USER ROLE:", role)
+#             required_roles = TOOL_PERMISSIONS.get(tool_name, [])
 
-#             allowed_roles = TOOL_PERMISSIONS.get(tool_name, [])
+#             if not required_roles:
+#                 raise Exception(f"No permissions defined for tool {tool_name}")
 
-#             if role not in allowed_roles:
+#             required_role = required_roles[0]
+
+#             if ROLE_HIERARCHY[role] < ROLE_HIERARCHY[required_role]:
 #                 print(f"[SECURITY] user={user} role={role} tool={tool_name} → DENIED")
 #                 raise Exception(f"Role '{role}' not allowed for {tool_name}")
 
@@ -112,7 +116,3 @@ def secure_tool(tool_name: str):
 #         return wrapper
 
 #     return decorator
-
-
-
-

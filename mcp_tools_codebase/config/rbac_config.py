@@ -1,50 +1,66 @@
+ROLE_HIERARCHY = {
+    "viewer": 1,
+    "operator": 2,
+    "sales_agent": 3,
+    "manager": 4,
+    "admin": 5
+}
+
 TOOL_PERMISSIONS = {
 
-# ---------------------------
-# Identity / Core tools
-# ---------------------------
+    "get_partner": ["viewer"],
 
-"get_partner": ["viewer", "operator", "sales_agent", "manager", "admin"],
+    "create_partner": ["operator"],
 
-"create_partner": ["operator", "sales_agent", "manager", "admin"],
+    "get_user": ["manager"],
 
-"get_user": ["manager", "admin"],
+    "get_company": ["viewer"],
 
-"get_company": ["viewer", "operator", "sales_agent", "manager", "admin"],
+    "get_employee": ["viewer"],
 
+    "get_department": ["viewer"],
 
-# ---------------------------
-# HR tools
-# ---------------------------
+    "get_job": ["viewer"],
 
-"get_employee": ["viewer", "operator", "manager", "admin"],
+    "get_employee_leaves": ["operator"],
 
-"get_department": ["viewer", "operator", "manager", "admin"],
+    "check_employee_availability": ["operator"],
 
-"get_job": ["viewer", "operator", "manager", "admin"],
+    "get_employee_attendance": ["operator"],
 
-"get_employee_leaves": ["operator", "manager", "admin"],
+    "get_lead": ["viewer"],
 
-"check_employee_availability": ["operator", "manager", "admin"],
+    "update_lead_stage": ["sales_agent"],
 
-"get_employee_attendance": ["operator", "manager", "admin"],
+    "get_stage": ["viewer"],
 
+    "get_team": ["viewer"],
 
-# ---------------------------
-# CRM tools
-# ---------------------------
+    "create_activity": ["operator"],
 
-"get_lead": ["viewer", "operator", "sales_agent", "manager", "admin"],
+    "get_activity": ["viewer"],
 
-"update_lead_stage": ["sales_agent", "manager", "admin"],
+    "get_product": ["viewer"],
 
-"get_stage": ["viewer", "operator", "sales_agent", "manager", "admin"],
+    "get_product_stock": ["viewer"],
 
-"get_team": ["viewer", "operator", "sales_agent", "manager", "admin"],
+    "check_product_availability": ["viewer"],
 
-"create_activity": ["operator", "sales_agent", "manager", "admin"],
+    "get_stock_location": ["viewer"],
 
-"get_activity": ["viewer", "operator", "sales_agent", "manager", "admin"],
+    "get_sale_order": ["viewer"],
+
+    "get_sale_order_lines": ["viewer"],
+
+    "create_sale_order": ["operator"],
+
+    "get_customer_order_history": ["operator"],
+
+    "get_purchase_order": ["viewer"],
+
+    "get_purchase_order_lines": ["viewer"],
+
+    "check_material_availability": ["operator"]
 }
 
 
@@ -52,27 +68,79 @@ TOOL_PERMISSIONS = {
 
 # TOOL_PERMISSIONS = {
 
-#     # Identity tools
-#     "get_partner": ["viewer","operator","sales_agent","manager","admin"],
-#     "create_partner": ["operator","sales_agent"],
-#     "get_user": ["manager","admin"],
-#     "get_company": ["viewer","operator","sales_agent","manager","admin"],
+# # ---------------------------
+# # Identity / Core tools
+# # ---------------------------
 
-#     # HR tools
-#     "get_employee": ["viewer","operator","sales_agent","manager","admin"],
-#     "get_department": ["viewer","operator","sales_agent","manager","admin"],
-#     "get_job": ["viewer","operator","sales_agent","manager","admin"],
-#     "get_employee_leaves": ["operator","manager"],
-#     "check_employee_availability": ["operator","manager"],
-#     "get_employee_attendance": ["manager","admin"],
+# "get_partner": ["viewer", "operator", "sales_agent", "manager", "admin"],
 
-#     # CRM tools
-#     "get_lead": ["viewer","operator","sales_agent","manager","admin"],
-#     "update_lead_stage": ["manager"],
-#     "get_stage": ["viewer","operator","sales_agent","manager","admin"],
-#     "get_team": ["viewer","operator","sales_agent","manager","admin"],
-#     "create_activity": ["operator","sales_agent"],
-#     "get_activity": ["viewer","operator","sales_agent","manager","admin"],
+# "create_partner": ["operator", "sales_agent", "manager", "admin"],
+
+# "get_user": ["manager", "admin"],
+
+# "get_company": ["viewer", "operator", "sales_agent", "manager", "admin"],
+
+
+# # ---------------------------
+# # HR tools
+# # ---------------------------
+
+# "get_employee": ["viewer", "operator", "manager", "admin"],
+
+# "get_department": ["viewer", "operator", "manager", "admin"],
+
+# "get_job": ["viewer", "operator", "manager", "admin"],
+
+# "get_employee_leaves": ["operator", "manager", "admin"],
+
+# "check_employee_availability": ["operator", "manager", "admin"],
+
+# "get_employee_attendance": ["operator", "manager", "admin"],
+
+
+# # ---------------------------
+# # CRM tools
+# # ---------------------------
+
+# "get_lead": ["viewer", "operator", "sales_agent", "manager", "admin"],
+
+# "update_lead_stage": ["sales_agent", "manager", "admin"],
+
+# "get_stage": ["viewer", "operator", "sales_agent", "manager", "admin"],
+
+# "get_team": ["viewer", "operator", "sales_agent", "manager", "admin"],
+
+# "create_activity": ["operator", "sales_agent", "manager", "admin"],
+
+# "get_activity": ["viewer", "operator", "sales_agent", "manager", "admin"],
 # }
+
+
+
+
+# # TOOL_PERMISSIONS = {
+
+# #     # Identity tools
+# #     "get_partner": ["viewer","operator","sales_agent","manager","admin"],
+# #     "create_partner": ["operator","sales_agent"],
+# #     "get_user": ["manager","admin"],
+# #     "get_company": ["viewer","operator","sales_agent","manager","admin"],
+
+# #     # HR tools
+# #     "get_employee": ["viewer","operator","sales_agent","manager","admin"],
+# #     "get_department": ["viewer","operator","sales_agent","manager","admin"],
+# #     "get_job": ["viewer","operator","sales_agent","manager","admin"],
+# #     "get_employee_leaves": ["operator","manager"],
+# #     "check_employee_availability": ["operator","manager"],
+# #     "get_employee_attendance": ["manager","admin"],
+
+# #     # CRM tools
+# #     "get_lead": ["viewer","operator","sales_agent","manager","admin"],
+# #     "update_lead_stage": ["manager"],
+# #     "get_stage": ["viewer","operator","sales_agent","manager","admin"],
+# #     "get_team": ["viewer","operator","sales_agent","manager","admin"],
+# #     "create_activity": ["operator","sales_agent"],
+# #     "get_activity": ["viewer","operator","sales_agent","manager","admin"],
+# # }
 
 
