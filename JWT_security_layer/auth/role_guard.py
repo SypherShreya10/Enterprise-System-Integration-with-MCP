@@ -1,5 +1,5 @@
 from fastapi import Depends, HTTPException
-from config.rbac_config import TOOL_PERMISSIONS
+from config.rbac_config import TOOL_PERMISSIONS, ROLE_HIERARCHY
 from auth.dependencies import get_current_user
 
 
