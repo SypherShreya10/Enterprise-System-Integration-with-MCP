@@ -18,7 +18,8 @@ from typing import List, Dict, Any
 logger = logging.getLogger("odoo_client")
 logger.setLevel(logging.INFO)
 
-handler = logging.StreamHandler()
+# handler = logging.StreamHandler()
+handler = logging.FileHandler("odoo.log")
 formatter = logging.Formatter(
     "[ODOO_CLIENT] %(asctime)s | %(levelname)s | %(message)s"
 )
@@ -137,6 +138,49 @@ class OdooClient:
     # Public SAFE primitives
     # --------------------------------------------------------------------------
 
+    # def search_read(
+    #     self,
+    #     model: str,
+    #     domain: List,
+    #     fields: List[str],
+    #     limit: int = 10,
+    #     offset: int = 0,
+    #     apply_company_scope: bool = True,
+    # ) -> List[Dict[str, Any]]:
+    #     """
+    #     Safe read operation.
+    #     Used by ALL read tools.
+    #     """
+
+    #     self._validate_limit(limit)
+    #     self._validate_domain(domain)
+    #     self._validate_fields(fields)
+
+    #     if apply_company_scope:
+    #         domain = self._apply_company_scope(domain, model)
+
+    #     self._log_operation(
+    #         model=model,
+    #         operation="read",
+    #         domain=domain,
+    #         fields=fields,
+    #         limit=limit,
+    #     )
+
+    #     return self.models.execute_kw(
+    #         self.db,
+    #         self.uid,
+    #         self.password,
+    #         model,
+    #         "search_read",
+    #         [domain],
+    #         {
+    #             "fields": fields,
+    #             "limit": limit,
+    #             "offset": offset,
+    #         },
+    #     )
+
     def search_read(
         self,
         model: str,
@@ -144,11 +188,17 @@ class OdooClient:
         fields: List[str],
         limit: int = 10,
         offset: int = 0,
+        order: str | None = None,
         apply_company_scope: bool = True,
     ) -> List[Dict[str, Any]]:
         """
         Safe read operation.
         Used by ALL read tools.
+
+        Supports:
+        - limit
+        - offset (pagination)
+        - order (deterministic sorting)
         """
 
         self._validate_limit(limit)
@@ -164,7 +214,17 @@ class OdooClient:
             domain=domain,
             fields=fields,
             limit=limit,
+            order=order,
         )
+
+        params = {
+            "fields": fields,
+            "limit": limit,
+            "offset": offset,
+        }
+
+        if order:
+            params["order"] = order
 
         return self.models.execute_kw(
             self.db,
@@ -173,11 +233,7 @@ class OdooClient:
             model,
             "search_read",
             [domain],
-            {
-                "fields": fields,
-                "limit": limit,
-                "offset": offset,
-            },
+            params,
         )
 
     def create(self, model: str, values: Dict[str, Any]) -> int:
@@ -366,6 +422,8 @@ class OdooClient:
 
         MODELS_WITHOUT_COMPANY_ID = {
             "hr.attendance",
+            "res.company",
+            "purchase.config.settings",
         }
 
         if model in MODELS_WITHOUT_COMPANY_ID:
@@ -385,4 +443,26 @@ class OdooClient:
     # --------------------------------------------------------------------------
 
     def _log_operation(self, **kwargs):
+        # 1. Keep existing file logging
         logger.info("ODOO OPERATION | %s", kwargs)
+
+        # 2. NEW: Write to Odoo model
+        try:
+            self.models.execute_kw(
+                self.db,
+                self.uid,
+                self.password,
+                "mcp.audit.log",
+                "create",
+                [{
+                    "user_id": self.uid,
+                    "tool_name": kwargs.get("operation", "unknown"),
+                    "input_data": str(kwargs),
+                    "output_data": "",
+                    "status": "success",
+                    "risk_level": "low",
+                    "notes": "",
+                }]
+            )
+        except Exception as e:
+            logger.error(f"AUDIT LOG FAILED: {str(e)}")

@@ -6,6 +6,17 @@ from odoo_client import OdooClient
 logger = logging.getLogger(__name__)
 client = OdooClient()
 
+def wrap_response(data, summary=None, insights=None, model=None):
+    return {
+        "data": data,
+        "summary": summary or {},
+        "insights": insights or [],
+        "meta": {
+            "model": model,
+            "record_count": len(data) if isinstance(data, list) else 1
+        }
+    }
+
 # section 2: tool 5 - get employee
 def get_employee(
     *,
@@ -83,6 +94,7 @@ def get_employee(
         "work_email",
         "work_phone",
         "active",
+        "write_date",
     ]
 
     # Explicitly NOT included:
@@ -133,7 +145,12 @@ def get_employee(
             extra={"record_count": len(records)},
         )
 
-        return records
+        return wrap_response(
+    data=records,
+    summary={"count": len(records)},
+    insights=[f"{len(records)} employees found"] if records else ["No employees found"],
+    model="hr.employee"
+)
 
     except Exception as exc:
         logger.error(
@@ -220,6 +237,7 @@ def get_department(
         "manager_id",   # Returns (id, name) tuple
         "parent_id",    # Returns (id, name) tuple
         "company_id",   # Returns (id, name) tuple
+        "write_date",
     ]
 
     # ------------------------------------------------------------------
@@ -261,7 +279,12 @@ def get_department(
             extra={"record_count": len(records)},
         )
 
-        return records
+        return wrap_response(
+    data=records,
+    summary={"count": len(records)},
+    insights=[f"{len(records)} departments found"] if records else ["No departments found"],
+    model="hr.department"
+)
 
     except Exception as exc:
         logger.error(
@@ -346,6 +369,7 @@ def get_job(
         "name",
         "department_id",  # Returns (id, name) tuple
         "description",
+        "write_date",
     ]
 
     # ------------------------------------------------------------------
@@ -387,7 +411,12 @@ def get_job(
             extra={"record_count": len(records)},
         )
 
-        return records
+        return wrap_response(
+    data=records,
+    summary={"count": len(records)},
+    insights=[f"{len(records)} job roles found"] if records else ["No job roles found"],
+    model="hr.job"
+)
 
     except Exception as exc:
         logger.error(
@@ -515,6 +544,7 @@ def get_employee_leaves(
         "number_of_days",
         "holiday_status_id",  # Returns (id, name) tuple - leave type
         "state",
+        "write_date",
     ]
 
     # ------------------------------------------------------------------
@@ -564,7 +594,12 @@ def get_employee_leaves(
             extra={"record_count": len(records)},
         )
 
-        return records
+        return wrap_response(
+    data=records,
+    summary={"count": len(records)},
+    insights=[f"{len(records)} leave records found"] if records else ["No leave records found"],
+    model="hr.leave"
+)
 
     except Exception as exc:
         logger.error(
@@ -793,19 +828,32 @@ def check_employee_availability(
         )
 
         # Return comprehensive availability summary
-        return {
-            "employee_id": employee["id"],
-            "employee_name": employee["name"],
-            "date_range": {
-                "from": date_from_str,
-                "to": date_to_str,
+        return wrap_response (
+            data={
+                "employee_id": employee["id"],
+                "employee_name": employee["name"],
+                "date_range": {
+                    "from": date_from_str,
+                    "to": date_to_str,
+                },
+                "total_days": total_days,
+                "available_days": available_days,
+                "unavailable_days": unavailable_days,
+                "is_available": unavailable_days == 0,
+                "conflicting_leaves": conflicting_leaves,
             },
-            "total_days": total_days,
-            "available_days": available_days,
-            "unavailable_days": unavailable_days,
-            "is_available": unavailable_days == 0,
-            "conflicting_leaves": conflicting_leaves,
-        }
+            summary={
+                "total_days": total_days,
+                "available_days": available_days,
+                "unavailable_days": unavailable_days,
+                "is_available": unavailable_days == 0,
+            },
+            insights=[
+                "Employee fully available" if unavailable_days == 0
+                else f"{unavailable_days} unavailable days detected"
+            ],
+            model="hr.employee + hr.leave"
+    )
 
     except ValueError:
         # Re-raise validation errors as-is (already have good messages)
@@ -924,6 +972,7 @@ def get_employee_attendance(
         "check_in",       # Datetime
         "check_out",      # Datetime or False if still checked in
         "worked_hours",   # Float (computed field)
+        "write_date",
     ]
 
     # ------------------------------------------------------------------
@@ -968,7 +1017,12 @@ def get_employee_attendance(
             },
         )
 
-        return records
+        return wrap_response(
+    data=records,
+    summary={"count": len(records)},
+    insights=[f"{len(records)} attendance records found"] if records else ["No attendance records found"],
+    model="hr.attendance"
+)
 
     except Exception as exc:
         logger.error(

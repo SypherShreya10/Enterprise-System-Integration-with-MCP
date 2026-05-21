@@ -43,6 +43,36 @@ It MUST NOT be interpreted or bypassed by the AI agent.
 
 ---
 
+## Partner / Customer Records
+
+### Model: res.partner
+
+Allowed Operations:
+- read
+
+Allowed Fields:
+- id
+- name
+- credit_limit
+- customer_rank
+
+Forbidden Fields:
+- email
+- phone
+- mobile
+- address fields
+- bank accounts
+- tax identifiers
+- payment terms
+- internal notes
+- accounting properties
+
+Domain Restrictions:
+- company_id = current_company
+- customer_rank > 0
+
+---
+
 ## Inventory / Stock Management
 
 ### Model: product.product
@@ -285,11 +315,16 @@ Allowed Operations:
 - read
 
 Allowed Fields:
+- id
 - name
 - move_type
-- amount_total
-- state
+- partner_id
 - invoice_date
+- invoice_date_due
+- amount_total
+- amount_residual
+- payment_state
+- state
 
 Forbidden Fields:
 - journal_id

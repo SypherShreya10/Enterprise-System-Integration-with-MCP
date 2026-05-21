@@ -1,65 +1,128 @@
 from typing import Optional, List, Dict, Any
-import datetime
+from datetime import datetime
 import logging
 from odoo_client import OdooClient
+from validators import validate_write_payload
 
 logger = logging.getLogger(__name__)
 client = OdooClient()
 
-#section 3: tool - 15 create activity
+def wrap_response(data, summary=None, insights=None, model=None):
+    return {
+        "data": data,
+        "summary": summary or {},
+        "insights": insights or [],
+        "meta": {
+            "model": model,
+            "record_count": len(data) if isinstance(data, list) else 1
+        }
+    }
+
+#section 2: tool 15 - create activity
 def create_activity(
     *,
     activity_type_id: int,
-    user_id: int,
-    date_deadline: str,
+    summary: str,
     res_model: str,
     res_id: int,
-    summary: Optional[str] = None,
+    user_id: int,
     note: Optional[str] = None,
+    date_deadline: str,
 ) -> Dict[str, Any]:
     """
-    Create a follow-up activity (mail.activity).
+    Create a scheduled activity in Odoo.
 
-    MEDIUM RISK: Create-only operation.
-    Used to schedule calls, meetings, emails, or reminders
-    linked to an existing business record.
-
-    Safety Guarantees:
-    - Create-only (no updates)
-    - No auto-completion (state remains 'planned')
-    - Assigned user must be active internal user
-    - Activity type must exist
-    - Related record must exist and be accessible
-    - Strict field allowlist
-    - Company scoping enforced by OdooClient
-    - Full audit logging
+    Safety:
+    - Create-only operation
+    - Company-safe
+    - Internal-user assignment only
+    - Related record existence validation
+    - Activity type validation
+    - Centralized payload validation
     """
 
     # ------------------------------------------------------------------
-    # Input Validation
+    # Basic validation
     # ------------------------------------------------------------------
 
-    if not isinstance(activity_type_id, int) or activity_type_id <= 0:
-        raise ValueError("activity_type_id must be a positive integer")
+    if not summary or not summary.strip():
+        raise ValueError("Activity summary is required.")
 
-    if not isinstance(user_id, int) or user_id <= 0:
-        raise ValueError("user_id must be a positive integer")
+    summary = summary.strip()
 
-    if not isinstance(res_id, int) or res_id <= 0:
-        raise ValueError("res_id must be a positive integer")
-
-    if not isinstance(res_model, str) or not res_model.strip():
-        raise ValueError("res_model must be a non-empty string")
+    if not res_model or not res_model.strip():
+        raise ValueError("res_model is required.")
 
     res_model = res_model.strip()
 
-    try:
-        deadline_date = datetime.date.fromisoformat(date_deadline)
-    except Exception:
-        raise ValueError("date_deadline must be in YYYY-MM-DD format")
+    # ------------------------------------------------------------------
+    # Restrict allowed target models
+    # Prevent arbitrary model probing through mail.activity
+    # ------------------------------------------------------------------
+
+    ALLOWED_ACTIVITY_MODELS = {
+        "crm.lead",
+        "sale.order",
+        "purchase.order",
+        "res.partner",
+    }
+
+    if res_model not in ALLOWED_ACTIVITY_MODELS:
+        raise ValueError(
+            f"Activities cannot be attached to model '{res_model}'."
+        )
 
     # ------------------------------------------------------------------
-    # Verify Activity Type Exists (REFERENCE DATA)
+    # Validate date format
+    # ------------------------------------------------------------------
+
+    if date_deadline:
+        try:
+            datetime.strptime(date_deadline, "%Y-%m-%d")
+        except ValueError:
+            raise ValueError(
+                "date_deadline must be in YYYY-MM-DD format."
+            )
+
+    # ------------------------------------------------------------------
+    # Prepare values
+    # ------------------------------------------------------------------
+
+    values: Dict[str, Any] = {
+        "activity_type_id": activity_type_id,
+        "summary": summary,
+        "res_model": res_model,
+        "res_id": res_id,
+        "user_id": user_id,
+    }
+
+    if note:
+        values["note"] = note.strip()
+
+    if date_deadline:
+        values["date_deadline"] = date_deadline
+
+    # ------------------------------------------------------------------
+    # Centralized validation layer
+    # ------------------------------------------------------------------
+
+    validation = validate_write_payload(
+        client=client,
+        model_name="mail.activity",
+        values=values,
+        operation="create",
+    )
+
+    if not validation["valid"]:
+        raise ValueError(
+            "Payload validation failed: "
+            + "; ".join(validation["errors"])
+        )
+
+    values = validation["cleaned_values"]
+
+    # ------------------------------------------------------------------
+    # Verify activity type exists
     # ------------------------------------------------------------------
 
     activity_type = client.search_read(
@@ -67,127 +130,65 @@ def create_activity(
         domain=[("id", "=", activity_type_id)],
         fields=["id", "name"],
         limit=1,
-        apply_company_scope=False,  # reference data
     )
 
     if not activity_type:
         raise ValueError(
-            f"Activity type with id={activity_type_id} does not exist"
+            f"Activity type {activity_type_id} does not exist."
         )
 
-    activity_type_data = activity_type[0]
-
     # ------------------------------------------------------------------
-    # Verify Assigned User is Active Internal User (SECURITY CRITICAL)
+    # Verify assigned user exists and is internal
     # ------------------------------------------------------------------
 
-    user = client.search_read(
+    assigned_user = client.search_read(
         model="res.users",
         domain=[
             ("id", "=", user_id),
-            ("active", "=", True),
-            ("share", "=", False),  # block portal users
+            ("share", "=", False),
         ],
         fields=["id", "name"],
         limit=1,
     )
 
-    if not user:
+    if not assigned_user:
         raise ValueError(
-            f"User with id={user_id} does not exist, is inactive, "
-            "or is not an internal user"
+            f"Internal user {user_id} does not exist."
         )
 
-    user_data = user[0]
-
-    # # ------------------------------------------------------------------
-    # # Verify Related Record Exists (NON-EMPTY DOMAIN)
-    # # ------------------------------------------------------------------
-
-    # related = client.search_read(
-    #     model=res_model,
-    #     domain=[("id", "=", res_id)],
-    #     fields=["id"],
-    #     limit=1,
-    # )
-
-    # if not related:
-    #     raise ValueError(
-    #         f"Related record {res_model} with id={res_id} not found "
-    #         "or not accessible in current company"
-    #     )
-
     # ------------------------------------------------------------------
-    # Verify Related Record Exists and Model is Valid
+    # Verify related business record exists
     # ------------------------------------------------------------------
 
-    try:
-        related = client.search_read(
-            model=res_model,
-            domain=[("id", "=", res_id)],
-            fields=["id"],
-            limit=1,
-        )
+    related_record = client.search_read(
+        model=res_model,
+        domain=[("id", "=", res_id)],
+        fields=["id"],
+        limit=1,
+    )
 
-    except Exception:
-        # Model itself does not exist or is inaccessible
+    if not related_record:
         raise ValueError(
-            f"Model '{res_model}' does not exist or is not accessible"
+            f"Record {res_id} does not exist in model '{res_model}'."
         )
-
-    if not related:
-        raise ValueError(
-            f"Related record {res_model} with id={res_id} not found "
-            "or not accessible in current company"
-        )
-
-    # ------------------------------------------------------------------
-    # Prepare Allowlisted Create Values
-    # ------------------------------------------------------------------
-
-    values: Dict[str, Any] = {
-        "activity_type_id": activity_type_id,
-        "user_id": user_id,
-        "date_deadline": date_deadline,
-        "res_model": res_model,
-        "res_id": res_id,
-    }
-
-    if summary:
-        values["summary"] = summary.strip()
-
-    if note:
-        values["note"] = note.strip()
-
-    # Forbidden fields (never set):
-    # - state
-    # - date_done
-    # - company_id
-
-    # ------------------------------------------------------------------
-    # Audit Logging (Before Create)
-    # ------------------------------------------------------------------
 
     logger.info(
-        "MCP Tool: create_activity",
+        "Tool create_activity invoked",
         extra={
-            "model": "mail.activity",
-            "operation": "create",
-            "activity_type": activity_type_data["name"],
-            "assigned_user": user_data["name"],
+            "activity_type_id": activity_type_id,
             "res_model": res_model,
             "res_id": res_id,
-            "date_deadline": date_deadline,
-            "company_id": client.company_id,
-            "caller_user_id": client.user_id,
+            "assigned_user_id": user_id,
+            "caller_uid": client.uid,
         },
     )
 
     # ------------------------------------------------------------------
-    # Create Activity
+    # Create activity
     # ------------------------------------------------------------------
 
     try:
+
         activity_id = client.create(
             model="mail.activity",
             values=values,
@@ -197,33 +198,43 @@ def create_activity(
             "Activity created successfully",
             extra={
                 "activity_id": activity_id,
-                "activity_type": activity_type_data["name"],
-                "assigned_user": user_data["name"],
-                "date_deadline": date_deadline,
+                "res_model": res_model,
+                "res_id": res_id,
             },
         )
 
-        return {
-            "activity_id": activity_id,
-            "activity_type_id": activity_type_id,
-            "activity_type_name": activity_type_data["name"],
-            "assigned_user_id": user_id,
-            "assigned_user_name": user_data["name"],
-            "date_deadline": date_deadline,
-            "res_model": res_model,
-            "res_id": res_id,
-            "summary": summary,
-            "message": (
-                f"Activity '{activity_type_data['name']}' created and assigned to "
-                f"{user_data['name']} with deadline {date_deadline}"
-            ),
-        }
+        return wrap_response(
+            data={
+                "activity_id": activity_id,
+                "activity_type": activity_type[0]["name"],
+                "assigned_user": assigned_user[0]["name"],
+                "related_model": res_model,
+                "related_record_id": res_id,
+                "message": "Activity created successfully.",
+            },
+            summary={"status": "created"},
+            insights=[
+                f"Activity assigned to {assigned_user[0]['name']}",
+                f"Attached to {res_model} record {res_id}",
+            ],
+            model="mail.activity",
+        )
 
     except Exception as exc:
+
         logger.error(
-            f"create_activity failed: {type(exc).__name__}: {str(exc)}",
+            "create_activity failed",
+            extra={
+                "values": values,
+                "res_model": res_model,
+                "res_id": res_id,
+            },
             exc_info=True,
         )
+
+        if isinstance(exc, ValueError):
+            raise
+
         raise RuntimeError(
             f"Failed to create activity: {str(exc)}"
         ) from exc
@@ -372,7 +383,14 @@ def get_activity(
             extra={"record_count": len(records)},
         )
 
-        return records
+        return wrap_response(
+            data=records,
+            summary={"count": len(records)},
+            insights=[
+                f"{len(records)} activities found"
+            ] if records else ["No activities found"],
+            model="mail.activity"
+        )
 
     except Exception as exc:
         logger.error(

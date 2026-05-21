@@ -1,4 +1,105 @@
-from mcp.server.fastmcp import FastMCP
+# from mcp.server.fastmcp import FastMCP
+# 1
+from odoo_client import OdooClient
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+
+client = OdooClient()
+
+installed_modules_data = client.search_read(
+    model="ir.module.module",
+    domain=[("state", "=", "installed")],
+    fields=["name"],
+    limit=100,
+    apply_company_scope=False
+)
+
+INSTALLED_MODULES = {m["name"] for m in installed_modules_data}
+
+print("Installed Modules:", INSTALLED_MODULES)
+
+# 2.
+TOOL_MODULE_MAP = {
+    # CRM
+    "get_lead": "crm",
+    "update_lead_stage": "crm",
+    "get_stage": "crm",
+    "get_team": "crm",
+
+    # HR
+    "get_employee": "hr",
+    "get_department": "hr",
+    "get_job": "hr",
+    "get_employee_leaves": "hr",
+    "check_employee_availability": "hr",
+    "get_employee_attendance": "hr",
+
+    # Sales
+    "get_sale_order": "sale",
+    "get_sale_order_lines": "sale",
+    "create_sale_order": "sale",
+    "get_customer_order_history": "sale",
+
+    # Purchase / ERP
+    "get_purchase_order": "purchase",
+    "get_purchase_order_lines": "purchase",
+    "check_material_availability": "purchase",
+    "evaluate_purchase_order": "purchase",
+
+    # Inventory
+    "get_product": "stock",
+    "get_product_stock": "stock",
+    "check_product_availability": "stock",
+    "get_stock_location": "stock",
+
+    # Manufacturing
+    "get_manufacturing_order": "mrp",
+    "check_manufacturing_capacity": "mrp",
+    "get_bill_of_materials": "mrp",
+    "check_manufacturing_feasibility": "mrp",
+    "explode_bill_of_materials": "mrp",
+
+    # Accounting
+    "get_customer_invoices": "account",
+    "check_customer_credit": "account",
+    "get_payment_history": "account",
+
+    # Mail
+    "create_activity": "mail",
+    "get_activity": "mail",
+
+    # Common (always available)
+    "get_user": "base",
+    "get_company": "base",
+    "get_partner": "base",
+    "create_partner": "base",
+}
+
+# 3.
+def is_tool_enabled(tool_name: str) -> bool:
+    required_module = TOOL_MODULE_MAP.get(tool_name)
+
+    if not required_module:
+        return True  # no restriction
+
+    return required_module in INSTALLED_MODULES
+
+
+# 4. 
+def register_tool(name, module=None, description=None):
+    def wrapper(func):
+        required_module = module or TOOL_MODULE_MAP.get(name)
+
+        if required_module and required_module not in INSTALLED_MODULES:
+            return func
+
+        return mcp.tool(
+            name=name,
+            description=description
+        )(func)
+
+    return wrapper
+
 
 from tools.crm import (
     get_partner,
@@ -8,6 +109,7 @@ from tools.crm import (
     get_stage,
     get_team,
 )
+
 from tools.common import (
     get_user,
     get_company, 
@@ -39,6 +141,7 @@ from tools.erp import (
     get_purchase_order,
     get_purchase_order_lines,
     check_material_availability,
+    evaluate_purchase_order,
 
     #Manufacturing tools:
     get_manufacturing_order,
@@ -46,21 +149,35 @@ from tools.erp import (
     get_bill_of_materials,
     check_manufacturing_feasibility,
     explode_bill_of_materials,
+
+    #Accounting tools
+    get_customer_invoices,
+    check_customer_credit,
+    get_payment_history,
+
+
+    check_order_fulfillment_feasibility,
+    analyze_customer_relationship,
 )
 
 # ------------------------------------------------------------------------------
 # Create MCP server
 # ------------------------------------------------------------------------------
 
-mcp = FastMCP(
-    name="odoo-mcp-server",
-)
+# mcp = FastMCP(
+#     name="odoo-mcp-server"
+#     # resources=True
+# )
+from mcp_instance import mcp
+import metadata_resources
+_ = metadata_resources
+app = FastAPI()
 
 # ------------------------------------------------------------------------------
 # Tool: section 1: tool 1 - get_partner
 # ------------------------------------------------------------------------------
 
-@mcp.tool(
+@register_tool(
     name="get_partner",
     description=(
         "Fetch partner (person or organization) records from Odoo.\n\n"
@@ -90,7 +207,7 @@ def get_partner_tool(
 # Tool: section 1: tool 2 - create_partner
 # ------------------------------------------------------------------------------
 
-@mcp.tool(
+@register_tool(
     name="create_partner",
     description=(
         "Create a new partner (contact / customer / supplier) in Odoo.\n\n"
@@ -127,7 +244,7 @@ def create_partner_tool(
 # Tool: section 1: tool 3 - get_user
 # ------------------------------------------------------------------------------
 
-@mcp.tool(
+@register_tool(
     name="get_user",
     description=(
         "Fetch internal system users from Odoo (read-only).\n\n"
@@ -153,7 +270,7 @@ def get_user_tool(
 # Tool: section 1: tool 4 - get_company
 # ------------------------------------------------------------------------------
 
-@mcp.tool(
+@register_tool(
     name="get_company",
     description=(
         "Fetch current company information from Odoo.\n\n"
@@ -170,7 +287,7 @@ def get_company_tool(
 # Tool: section 2: tool 5 - get_employee (READ)
 # ------------------------------------------------------------------------------
 
-@mcp.tool(
+@register_tool(
     name="get_employee",
     description=(
         "Fetch employee information from Odoo (read-only).\n\n"
@@ -201,7 +318,7 @@ def get_employee_tool(
 # section 2: tool 6 - get_department
 # ------------------------------------------------------------------
 
-@mcp.tool(
+@register_tool(
     name="get_department",
     description=(
         "Fetch company department structure.\n\n"
@@ -227,7 +344,7 @@ def get_department_tool(
 # section 2: tool 7 - get_job
 # ------------------------------------------------------------------
 
-@mcp.tool(
+@register_tool(
     name="get_job",
     description=(
         "Fetch job role definitions.\n\n"
@@ -252,7 +369,7 @@ def get_job_tool(
 # section 2: tool 8 - get_employee_leaves
 # ------------------------------------------------------------------
 
-@mcp.tool(
+@register_tool(
     name="get_employee_leaves",
     description=(
         "Fetch approved employee leaves for availability planning.\n\n"
@@ -273,7 +390,7 @@ def get_employee_leaves_tool(
     )
 
 #section 2: tool 9 - check employee availability
-@mcp.tool(
+@register_tool(
     name="check_employee_availability",
     description=(
         "Check if a specific employee is available within a date range.\n\n"
@@ -295,7 +412,7 @@ def check_employee_availability_tool(
     )
 
 #section 2: tool 10 - get_employee attendance
-@mcp.tool(
+@register_tool(
     name="get_employee_attendance",
     description=(
         "Fetch employee attendance (clock-in / clock-out) records.\n\n"
@@ -317,7 +434,7 @@ def get_employee_attendance_tool(
 # ------------------------------------------------------------------
 # section 3: tool 11 - get_lead
 # ------------------------------------------------------------------
-@mcp.tool(
+@register_tool(
     name="get_lead",
     description=(
         "Fetch CRM leads or opportunities from Odoo (read-only).\n\n"
@@ -347,7 +464,7 @@ def get_lead_tool(
 # section 3: tool 12 - update_lead_stage (HIGH RISK)
 # ------------------------------------------------------------------
 
-@mcp.tool(
+@register_tool(
     name="update_lead_stage",
     description=(
         "Move a CRM lead or opportunity to a new pipeline stage.\n\n"
@@ -369,7 +486,7 @@ def update_lead_stage_tool(
 # section 3: tool 13 - get_stage
 # ------------------------------------------------------------------
 
-@mcp.tool(
+@register_tool(
     name="get_stage",
     description=(
         "Fetch CRM sales pipeline stages.\n\n"
@@ -395,7 +512,7 @@ def get_stage_tool(
 # section 3: tool 14 - get_team
 # ------------------------------------------------------------------
 
-@mcp.tool(
+@register_tool(
     name="get_team",
     description=(
         "Fetch CRM sales team information.\n\n"
@@ -421,7 +538,7 @@ def get_team_tool(
 # section 3: tool 15 - create_activity
 # ------------------------------------------------------------------
 
-@mcp.tool(
+@register_tool(
     name="create_activity",
     description=(
         "Create a follow-up activity (call, meeting, reminder).\n\n"
@@ -453,7 +570,7 @@ def create_activity_tool(
 # section 3: tool 16 - get_activity
 # ------------------------------------------------------------------
 
-@mcp.tool(
+@register_tool(
     name="get_activity",
     description=(
         "Fetch scheduled activities.\n\n"
@@ -480,7 +597,7 @@ def get_activity_tool(
 # section 4: tool 17 - get_product
 # ------------------------------------------------------------------
 
-@mcp.tool(
+@register_tool(
     name="get_product",
     description=(
         "Fetch sellable product details from Odoo.\n\n"
@@ -510,7 +627,7 @@ def get_product_tool(
 # section 4: tool 18 - get_product_stock
 # ------------------------------------------------------------------
 
-@mcp.tool(
+@register_tool(
     name="get_product_stock",
     description=(
         "Check inventory quantity for a product.\n\n"
@@ -532,7 +649,7 @@ def get_product_stock_tool(
 # section 4: tool 19 - check_product_availability
 # ------------------------------------------------------------------
 
-@mcp.tool(
+@register_tool(
     name="check_product_availability",
     description=(
         "Check whether requested quantity of a product can be fulfilled.\n\n"
@@ -561,7 +678,7 @@ def check_product_availability_tool(
 # section 4: tool 20 - get_stock_location
 # ------------------------------------------------------------------
 
-@mcp.tool(
+@register_tool(
     name="get_stock_location",
     description=(
         "Fetch internal warehouse / stock location information.\n\n"
@@ -589,7 +706,7 @@ def get_stock_location_tool(
 # section 5: tool 21 - get_sale_order
 # ------------------------------------------------------------------
 
-@mcp.tool(
+@register_tool(
     name="get_sale_order",
     description=(
         "Fetch sales orders from Odoo (read-only).\n\n"
@@ -622,7 +739,7 @@ def get_sale_order_tool(
 # section 5: tool 22 - get_sale_order_lines
 # ------------------------------------------------------------------
 
-@mcp.tool(
+@register_tool(
     name="get_sale_order_lines",
     description=(
         "Fetch line items of a specific sales order.\n\n"
@@ -644,7 +761,7 @@ def get_sale_order_lines_tool(
 # section 5: tool 23 - create_sale_order (WRITE)
 # ------------------------------------------------------------------
 
-@mcp.tool(
+@register_tool(
     name="create_sale_order",
     description=(
         "Create a new sales order in Odoo.\n\n"
@@ -681,7 +798,7 @@ def create_sale_order_tool(
 # section 5: tool 24 - get_customer_order_history
 # ------------------------------------------------------------------
 
-@mcp.tool(
+@register_tool(
     name="get_customer_order_history",
     description=(
         "Fetch full sales history for a specific customer.\n\n"
@@ -703,7 +820,7 @@ def get_customer_order_history_tool(
 # section 6: tool 25 - get_purchase_order
 # ------------------------------------------------------------------
 
-@mcp.tool(
+@register_tool(
     name="get_purchase_order",
     description=(
         "Fetch purchase orders from Odoo (read-only).\n\n"
@@ -734,7 +851,7 @@ def get_purchase_order_tool(
 # section 6: tool 26 - get_purchase_order_lines
 # ------------------------------------------------------------------
 
-@mcp.tool(
+@register_tool(
     name="get_purchase_order_lines",
     description=(
         "Fetch line items of a specific purchase order.\n\n"
@@ -757,7 +874,7 @@ def get_purchase_order_lines_tool(
 # section 6: tool 27 - check_material_availability
 # ------------------------------------------------------------------
 
-@mcp.tool(
+@register_tool(
     name="check_material_availability",
     description=(
         "Check if required raw materials are available for manufacturing.\n\n"
@@ -787,7 +904,7 @@ def check_material_availability_tool(
 # section 7: tool 28 - get_manufacturing_order
 # ------------------------------------------------------------------
 
-@mcp.tool(
+@register_tool(
     name="get_manufacturing_order",
     description=(
         "Fetch manufacturing orders from Odoo (read-only).\n\n"
@@ -817,7 +934,7 @@ def get_manufacturing_order_tool(
 # section 7: tool 29 - check_manufacturing_capacity
 # ------------------------------------------------------------------
 
-@mcp.tool(
+@register_tool(
     name="check_manufacturing_capacity",
     description=(
         "Analyze manufacturing workload within a date range.\n\n"
@@ -841,7 +958,7 @@ def check_manufacturing_capacity_tool(
 # section 7: tool 30 - get_bill_of_materials
 # ------------------------------------------------------------------
 
-@mcp.tool(
+@register_tool(
     name="get_bill_of_materials",
     description=(
         "Fetch Bill of Materials (BOM) for a product.\n\n"
@@ -861,7 +978,7 @@ def get_bill_of_materials_tool(
 # section 7: tool 31 - check_manufacturing_feasibility
 # ------------------------------------------------------------------
 
-@mcp.tool(
+@register_tool(
     name="check_manufacturing_feasibility",
     description=(
         "Evaluate whether a product can be manufactured.\n\n"
@@ -890,7 +1007,7 @@ def check_manufacturing_feasibility_tool(
 # section 7: tool 32 - explode_bill_of_materials
 # ------------------------------------------------------------------
 
-@mcp.tool(
+@register_tool(
     name="explode_bill_of_materials",
     description=(
         "Recursively expand a Bill of Materials.\n\n"
@@ -910,9 +1027,157 @@ def explode_bill_of_materials_tool(
         depth=depth,
     )
 
+# ------------------------------------------------------------------
+# section 8: tool 33 - get_customer_invoices
+# ------------------------------------------------------------------
+
+@register_tool(
+    name="get_customer_invoices",
+    description=(
+        "Fetch customer invoices or refunds from Odoo.\n\n"
+        "Supports filtering by customer, payment status, invoice type, "
+        "or invoice date range.\n"
+        "Cancelled invoices are excluded.\n"
+        "At least one filter must be provided."
+    ),
+)
+def get_customer_invoices_tool(
+    partner_id: int | None = None,
+    move_type: str | None = None,
+    payment_state: str | None = None,
+    invoice_date_from: str | None = None,
+    invoice_date_to: str | None = None,
+    limit: int = 20,
+):
+    return get_customer_invoices(
+        partner_id=partner_id,
+        move_type=move_type,
+        payment_state=payment_state,
+        invoice_date_from=invoice_date_from,
+        invoice_date_to=invoice_date_to,
+        limit=limit,
+    )
+
+# ------------------------------------------------------------------
+# section 8: tool 34 - check_customer_credit
+# ------------------------------------------------------------------
+
+@register_tool(
+    name="check_customer_credit",
+    description=(
+        "Evaluate the credit position of a customer.\n\n"
+        "Calculates outstanding invoice balance, credit limit, "
+        "available credit, and overdue invoices.\n\n"
+        "Used before confirming large sales orders."
+    ),
+)
+def check_customer_credit_tool(
+    partner_id: int,
+):
+    return check_customer_credit(
+        partner_id=partner_id,
+    )
+
+# ------------------------------------------------------------------
+# section 8: tool 35 - get_payment_history
+# ------------------------------------------------------------------
+
+@register_tool(
+    name="get_payment_history",
+    description=(
+        "Fetch paid invoice history for a customer.\n\n"
+        "Provides a view of historical payments including "
+        "invoice dates, due dates, and payment terms.\n\n"
+        "Includes analytics such as total payments and payment profile."
+    ),
+)
+def get_payment_history_tool(
+    partner_id: int,
+    limit: int = 50,
+):
+    return get_payment_history(
+        partner_id=partner_id,
+        limit=limit,
+    )
+
+# ------------------------------------------------------------------
+# section 9: tool 36 - check_order_fulfillment_feasibility
+# ------------------------------------------------------------------
+
+@register_tool("check_order_fulfillment_feasibility", "sale")
+def check_order_fulfillment_feasibility_tool(
+    partner_id: int,
+    product_id: int,
+    quantity: float,
+    date_required: str,
+):
+    return check_order_fulfillment_feasibility(
+        partner_id=partner_id,
+        product_id=product_id,
+        quantity=quantity,
+        date_required=date_required,
+    )
+
+
+# ------------------------------------------------------------------
+# section 9: tool 37 - analyze_customer_relationship
+# ------------------------------------------------------------------
+
+@register_tool("analyze_customer_relationship", "crm")
+def analyze_customer_relationship_tool(
+    partner_id: int,
+):
+    return analyze_customer_relationship(
+        partner_id=partner_id,
+    )
+
+
+# tool 38: evaluate_purchase_order
+@register_tool(
+    name="evaluate_purchase_order",
+    description=(
+        "Evaluate whether a purchase order should be approved.\n\n"
+        "This is a decision-support tool (read-only).\n\n"
+        "It analyzes:\n"
+        "- Purchase order amount vs approval policy\n"
+        "- Current PO state\n"
+        "- Material availability (stock vs required)\n\n"
+        "Returns:\n"
+        "- Whether the PO can be approved\n"
+        "- Detailed conditions and reasoning\n"
+        "- Recommendation for the user\n\n"
+        "IMPORTANT: This tool does NOT approve the PO.\n"
+        "User must manually approve in Odoo."
+    ),
+)
+def evaluate_purchase_order_tool(
+    order_id: int,
+):
+    return evaluate_purchase_order(
+        order_id=order_id,
+    )
+
 # ------------------------------------------------------------------------------
 # Server entry point
 # ------------------------------------------------------------------------------
 
 if __name__ == "__main__":
     mcp.run()
+
+
+# ------------------------------------------------------------------------------
+# Odoo Webhook Endpoint
+# ------------------------------------------------------------------------------
+
+@app.post("/webhook/odoo")
+async def odoo_webhook(request: Request):
+
+    payload = await request.json()
+
+    print("Webhook received:", payload)
+
+    return JSONResponse(
+        content={
+            "status": "received"
+        }
+    )

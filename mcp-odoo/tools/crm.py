@@ -3,10 +3,22 @@ from odoo_client import OdooClient
 import datetime
 import logging
 import re
+from validators import validate_write_payload
 
 logger = logging.getLogger(__name__)
 
 client = OdooClient()
+
+def wrap_response(data, summary=None, insights=None, model=None):
+    return {
+        "data": data,
+        "summary": summary or {},
+        "insights": insights or [],
+        "meta": {
+            "model": model,
+            "record_count": len(data) if isinstance(data, list) else 1
+        }
+    }
 
 
 #section 1: tool 1 - get partner
@@ -77,6 +89,7 @@ def get_partner(
         "supplier_rank",
         "credit_limit",
         "parent_id",
+        "write_date",
     ]
 
     logger.info("Tool get_partner invoked")
@@ -94,7 +107,14 @@ def get_partner(
             r["is_customer"] = r.get("customer_rank", 0) > 0
             r["is_supplier"] = r.get("supplier_rank", 0) > 0
 
-        return records
+        return wrap_response(
+    data=records,
+    summary={"count": len(records)},
+    insights=[
+        f"{len(records)} partners found"
+    ] if records else ["No partners found"],
+    model="res.partner"
+)
 
     except Exception as exc:
         logger.error("get_partner failed", exc_info=True)
@@ -141,27 +161,6 @@ def create_partner(
         if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
             raise ValueError("Invalid email format.")
 
-    # ------------------------------------------------------------------
-    # Uniqueness check
-    # NOTE:
-    # Company scoping is enforced inside odoo_client.search_read().
-    # Do NOT re-apply company filters here.
-    # ------------------------------------------------------------------
-
-    existing = client.search_read(
-        model="res.partner",
-        domain=[
-            ("name", "=", name),
-            ("active", "=", True),
-        ],
-        fields=["id"],
-        limit=1,
-    )
-
-    if existing:
-        raise ValueError(
-            f"A partner named '{name}' already exists in this company."
-        )
 
     # ------------------------------------------------------------------
     # Prepare allowlisted create values
@@ -190,10 +189,29 @@ def create_partner(
     if is_supplier:
         values["supplier_rank"] = 1
 
+    # ------------------------------------------------------------------
+    # Centralized validation layer
+    # ------------------------------------------------------------------
+
+    validation = validate_write_payload(
+        client=client,
+        model_name="res.partner",
+        values=values,
+        operation="create",
+    )
+
+    if not validation["valid"]:
+        raise ValueError(
+        "Payload validation failed: "
+        + "; ".join(validation["errors"])
+    )
+
+    values = validation["cleaned_values"]
+
     logger.info(
         "Tool create_partner invoked",
         extra={
-            "name": name,
+            "partner_name": name,
             "is_customer": is_customer,
             "is_supplier": is_supplier,
         },
@@ -213,14 +231,19 @@ def create_partner(
             "Partner created successfully",
             extra={
                 "partner_id": partner_id,
-                "name": name,
+                "partner_name": name,
             },
         )
 
-        return {
-            "partner_id": partner_id,
-            "message": f"Partner '{name}' created successfully.",
-        }
+        return wrap_response(
+    data={
+        "partner_id": partner_id,
+        "message": f"Partner '{name}' created successfully."
+    },
+    summary={"status": "created"},
+    insights=[f"Partner '{name}' created"],
+    model="res.partner"
+)
 
     except Exception as exc:
         logger.error(
@@ -297,6 +320,7 @@ def get_lead(
         "date_deadline",
         "create_date",
         "type",
+        "write_date",
     ]
 
     logger.info("Tool get_lead invoked")
@@ -324,8 +348,15 @@ def get_lead(
                 else None
             )
 
-        return records
-
+        return wrap_response(
+    data=records,
+    summary={"count": len(records)},
+    insights=[
+        f"{len(records)} leads/opportunities found"
+    ] if records else ["No leads found"],
+    model="crm.lead"
+)
+    
     except Exception as exc:
         logger.error(
             "get_lead failed",
@@ -454,6 +485,25 @@ def update_lead_stage(
     stage_data = stage[0]
 
     # ------------------------------------------------------------------
+    # Centralized validation layer
+    # ------------------------------------------------------------------
+
+    validation = validate_write_payload(
+        client=client,
+        model_name="crm.lead",
+        values={"stage_id": stage_id},
+        operation="write",
+    )
+
+    if not validation["valid"]:
+        raise ValueError(
+            "Payload validation failed: "
+            + "; ".join(validation["errors"])
+        )
+
+    validated_values = validation["cleaned_values"]
+
+    # ------------------------------------------------------------------
     # Audit Logging (Before Update)
     # ------------------------------------------------------------------
 
@@ -483,7 +533,7 @@ def update_lead_stage(
         client.write(
             model="crm.lead",
             record_id=lead_id,
-            values={"stage_id": stage_id},
+            values=validated_values,
         )
 
         # Log success
@@ -499,14 +549,23 @@ def update_lead_stage(
         )
 
         # Return comprehensive result
-        return {
-            "lead_id": lead_id,
-            "lead_name": lead_data["name"],
-            "old_stage_id": old_stage_id,
-            "new_stage_id": stage_id,
-            "new_stage_name": stage_data["name"],
-            "message": f"Lead '{lead_data['name']}' moved to stage '{stage_data['name']}'",
-        }
+        return wrap_response(
+    data={
+        "lead_id": lead_id,
+        "lead_name": lead_data["name"],
+        "old_stage_id": old_stage_id,
+        "new_stage_id": stage_id,
+        "new_stage_name": stage_data["name"],
+    },
+    summary={
+        "status": "updated",
+        "message": f"Lead moved to '{stage_data['name']}'"
+    },
+    insights=[
+        f"Lead '{lead_data['name']}' stage updated"
+    ],
+    model="crm.lead"
+)
 
     except Exception as exc:
         # Log failure with full context
@@ -568,17 +627,27 @@ def get_stage(
         "sequence",
         "is_won",
         "fold",
+        "write_date",
     ]
 
     logger.info("Tool get_stage invoked")
 
     try:
-        return client.search_read(
+        records = client.search_read(
             model="crm.stage",
             domain=domain,
             fields=fields,
             limit=limit,
-            apply_company_scope=False,  # ✅ REQUIRED
+            apply_company_scope=False,
+        )
+
+        return wrap_response(
+            data=records,
+            summary={"count": len(records)},
+            insights=[
+                f"{len(records)} stages found"
+            ] if records else ["No stages found"],
+            model="crm.stage"
         )
 
     except Exception as exc:
@@ -620,12 +689,13 @@ def get_team(
         "name",
         "user_id",     # team leader
         "member_ids",  # team members
+        "write_date",
     ]
 
     logger.info("Tool get_team invoked")
 
     try:
-        return client.search_read(
+        records = client.search_read(
             model="crm.team",
             domain=domain,
             fields=fields,
@@ -633,8 +703,15 @@ def get_team(
             apply_company_scope=True,  # ✅ CRITICAL FIX
         )
 
+        return wrap_response(
+            data=records,
+            summary={"count": len(records)},
+            insights=[
+                f"{len(records)} teams found"
+            ] if records else ["No teams found"],
+            model="crm.team"
+        )
+
     except Exception as exc:
         logger.error("get_team failed", exc_info=True)
         raise RuntimeError("Failed to fetch CRM teams") from exc
-
-

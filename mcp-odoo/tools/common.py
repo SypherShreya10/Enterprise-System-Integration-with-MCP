@@ -5,6 +5,16 @@ from odoo_client import OdooClient
 logger = logging.getLogger(__name__)
 client = OdooClient()
 
+def wrap_response(data, summary=None, insights=None, model=None):
+    return {
+        "data": data,
+        "summary": summary or {},
+        "insights": insights or [],
+        "meta": {
+            "model": model,
+            "record_count": len(data) if isinstance(data, list) else 1
+        }
+    }
 
 # section 1: tool 3 - get users
 def get_user(
@@ -99,6 +109,7 @@ def get_user(
         "company_id",  # User's main company
         "company_ids",  # All companies user has access to
         "active",
+        "write_date",  # Last update timestamp
     ]
 
     # Forbidden fields (documented for clarity, not returned):
@@ -154,7 +165,14 @@ def get_user(
             },
         )
 
-        return records
+        return wrap_response(
+            data=records,
+            summary={"count": len(records)},
+            insights=[
+                f"{len(records)} users found"
+            ] if records else ["No users found"],
+            model="res.users"
+        )
 
     except Exception as exc:
         # Log failure with full context
@@ -327,7 +345,12 @@ def get_company(
             },
         )
 
-        return company_data
+        return wrap_response(
+            data=company_data,
+            summary={"status": "success"},
+            insights=[f"Company '{company_data.get('name')}' fetched"],
+            model="res.company"
+        )
 
     except Exception as exc:
         # Log failure with full context

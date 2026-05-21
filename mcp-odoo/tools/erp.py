@@ -1,11 +1,31 @@
 from typing import Optional, List, Dict, Any
 import logging
-import datetime
+from datetime import datetime, date
 from odoo_client import OdooClient, ValidationError
+from validators import validate_write_payload
 
 logger = logging.getLogger(__name__)
 client = OdooClient()
 
+
+def format_response(data, summary=None, insights=None, meta=None):
+    return {
+        "data": data,
+        "summary": summary or {},
+        "insights": insights or [],
+        "meta": meta or {}
+    }
+
+def wrap_response(data, summary=None, insights=None, model=None):
+    return {
+        "data": data,
+        "summary": summary or {},
+        "insights": insights or [],
+        "meta": {
+            "model": model,
+            "record_count": len(data) if isinstance(data, list) else 1
+        }
+    }
 
 #section 4: tool 17 - get product
 def get_product(
@@ -136,6 +156,7 @@ def get_product(
         "active",
         "sale_ok",          # Can be sold
         "purchase_ok",      # Can be purchased
+        "write_date",       # Last update timestamp
     ]
 
     # FORBIDDEN FIELDS (documented for clarity):
@@ -193,7 +214,22 @@ def get_product(
             },
         )
 
-        return records
+        # return records
+        insights = []
+        if records:
+            insights.append(f"Found {len(records)} matching products")
+        else:
+            insights.append("No matching products found")
+
+        return format_response(
+            data=records,
+            summary={"count": len(records)},
+            insights=insights,
+            meta={
+                "model": "product.product",
+                "record_count": len(records)
+            }
+        )
 
     except Exception as exc:
         # Log failure
@@ -338,6 +374,7 @@ def get_product_stock(
         "location_id",          # Returns (id, name)
         "quantity",             # Total quantity at location
         "reserved_quantity",    # Reserved for orders/production
+        "write_date",           # Last update timestamp
     ]
 
     # FORBIDDEN FIELDS:
@@ -375,20 +412,49 @@ def get_product_stock(
         )
 
         # Handle no stock found
+        # if not records:
+        #     logger.info(
+        #         f"No stock found for product {product_id} ({product_name})",
+        #         extra={"product_id": product_id, "product_name": product_name},
+        #     )
+            
+        #     return {
+        #         "product_id": product_id,
+        #         "product_name": product_name,
+        #         "total_quantity": 0,
+        #         "total_reserved": 0,
+        #         "total_available": 0,
+        #         "locations": [],
+        #     }
+
         if not records:
             logger.info(
                 f"No stock found for product {product_id} ({product_name})",
                 extra={"product_id": product_id, "product_name": product_name},
             )
-            
-            return {
-                "product_id": product_id,
-                "product_name": product_name,
-                "total_quantity": 0,
-                "total_reserved": 0,
-                "total_available": 0,
-                "locations": [],
-            }
+
+            insights = [
+                "No stock available for this product in any warehouse",
+                "No internal locations contain this product"
+            ]
+
+            return format_response(
+                data={
+                    "product_id": product_id,
+                    "product_name": product_name,
+                    "locations": []
+                },
+                summary={
+                    "total_quantity": 0,
+                    "total_reserved": 0,
+                    "total_available": 0
+                },
+                insights=insights,
+                meta={
+                    "model": "stock.quant",
+                    "record_count": 0
+                }
+            )
 
         # Aggregate stock across locations
         total_quantity = 0
@@ -413,6 +479,23 @@ def get_product_stock(
 
         total_available = total_quantity - total_reserved
 
+        # ------------------------------------------------------------------
+        # Insights (Reasoning Hints)
+        # ------------------------------------------------------------------
+
+        insights = []
+
+        if total_available > 0:
+            insights.append(f"{total_available} units available across warehouses")
+        else:
+            insights.append("No available stock after reservations")
+
+        if total_reserved > 0:
+            insights.append(f"{total_reserved} units are reserved for existing orders")
+
+        if len(locations) > 1:
+            insights.append(f"Stock distributed across {len(locations)} locations")
+
         # Log success
         logger.info(
             f"get_product_stock completed: Product {product_id} ({product_name}) - "
@@ -426,14 +509,24 @@ def get_product_stock(
             },
         )
 
-        return {
+        return format_response(
+        data={
             "product_id": product_id,
             "product_name": product_name,
+            "locations": locations
+        },
+        summary={
             "total_quantity": total_quantity,
             "total_reserved": total_reserved,
-            "total_available": total_available,
-            "locations": locations,
+            "total_available": total_available
+        },
+        insights=insights,
+        meta={
+            "model": "stock.quant",
+            "record_count": len(records)
         }
+    )
+    
 
     except ValueError:
         # Re-raise validation errors
@@ -594,27 +687,43 @@ def check_product_availability(
     # Step 2: Handle Non-Stocked Products
     # ------------------------------------------------------------------
 
-    # Consumables and services don't track physical stock
-    # if product_type in ["consu", "service"]:
-    #     logger.info(
-    #         f"Product {product_id} ({product_name}) is {product_type} - no stock tracking",
-    #         extra={"product_type": product_type},
-    #     )
-        
-    #     return {
-    #         "product_id": product_id,
-    #         "product_name": product_name,
-    #         "product_type": product_type,
-    #         "requested_quantity": quantity,
-    #         "date_required": date_required,
-    #         "current_stock": None,
-    #         "current_stock_total": None,
-    #         "current_stock_reserved": None,
-    #         "incoming_quantity": None,
-    #         "can_fulfill": True,
-    #         "shortage": 0.0,
-    #         "recommended_action": f"{product_type.capitalize()} item - no stock tracking required",
-    #     }
+        # Consumables and services do not require stock reservation
+    if product_type in ["consu", "service"]:
+
+        logger.info(
+            f"Product {product_id} ({product_name}) is non-stockable",
+            extra={"product_type": product_type},
+        )
+
+        recommendation = (
+            "Service product — stock availability is not required."
+            if product_type == "service"
+            else "Consumable product — stock tracking may not apply."
+        )
+
+        return wrap_response(
+            data={
+                "product_id": product_id,
+                "product_name": product_name,
+                "product_type": product_type,
+                "requested_quantity": quantity,
+                "date_required": date_required,
+                "current_stock": None,
+                "current_stock_total": None,
+                "current_stock_reserved": None,
+                "incoming_quantity": None,
+                "can_fulfill": True,
+                "shortage": 0.0,
+                "recommended_action": recommendation,
+            },
+            summary={
+                "availability_status": "non_stockable",
+            },
+            insights=[
+                recommendation,
+            ],
+            model="product.product",
+        )
 
     # ------------------------------------------------------------------
     # Step 3: Get Current Stock
@@ -653,6 +762,9 @@ def check_product_availability(
     can_fulfill = total_available >= quantity
     shortage = max(quantity - total_available, 0.0)
     incoming_qty = 0.0
+
+    insights = []
+    next_action = None
 
     # ------------------------------------------------------------------
     # Step 5: Check Incoming Purchase Orders (if date specified)
@@ -718,6 +830,27 @@ def check_product_availability(
                 extra={"error": str(exc)},
             )
 
+    # ----------------------------
+    # Insights (simple reasoning)
+    # ----------------------------
+
+    if can_fulfill:
+        insights.append("Enough stock available")
+    else:
+        insights.append(f"Shortage of {shortage} units")
+
+    if incoming_qty > 0:
+        insights.append(f"{incoming_qty} units coming from purchase orders")
+    else:
+        insights.append("No incoming stock found")
+
+    if total_reserved > 0:
+        insights.append(f"{total_reserved} units are reserved")
+
+    if not can_fulfill:
+        next_action = "create_purchase_order"
+
+
     # ------------------------------------------------------------------
     # Step 6: Recommended Action
     # ------------------------------------------------------------------
@@ -756,7 +889,8 @@ def check_product_availability(
     # Return Comprehensive Result
     # ------------------------------------------------------------------
 
-    return {
+    return format_response(
+    data={
         "product_id": product_id,
         "product_name": product_name,
         "product_type": product_type,
@@ -766,10 +900,19 @@ def check_product_availability(
         "current_stock_total": total_qty,
         "current_stock_reserved": total_reserved,
         "incoming_quantity": incoming_qty,
+    },
+    summary={
         "can_fulfill": can_fulfill,
         "shortage": shortage,
         "recommended_action": recommended_action,
+    },
+    insights=insights,
+    meta={
+        "model": "stock.quant + purchase.order.line",
+        "record_count": len(quants),
+        "next_action": next_action
     }
+)
 
 
 #section 4: tool 20 - get stock location 
@@ -860,6 +1003,7 @@ def get_stock_location(
         "complete_name",  # Full hierarchical path
         "usage",          # Always 'internal'
         "company_id",     # Returns (id, name)
+        "write_date",     # Last update timestamp
     ]
 
     # ------------------------------------------------------------------
@@ -901,7 +1045,24 @@ def get_stock_location(
             extra={"record_count": len(records)},
         )
 
-        return records
+        insights = []
+
+        if records:
+            insights.append(f"{len(records)} internal locations found")
+        else:
+            insights.append("No internal warehouse locations found")
+
+        return format_response(
+            data=records,
+            summary={
+                "count": len(records)
+            },
+            insights=insights,
+            meta={
+                "model": "stock.location",
+                "record_count": len(records)
+            }
+        )
 
     except Exception as exc:
         # Log failure
@@ -1007,6 +1168,7 @@ def get_sale_order(
         "amount_untaxed",
         "state",
         "user_id",
+        "write_date",
     ]
 
     records = client.search_read(
@@ -1029,7 +1191,30 @@ def get_sale_order(
             record["salesperson_name"] = record["user_id"][1]
             record["user_id"] = record["user_id"][0]
 
-    return records
+    insights = []
+
+    if records:
+        insights.append(f"{len(records)} sales orders found")
+    else:
+        insights.append("No sales orders found")
+
+    states = list(set(r["state"] for r in records)) if records else []
+
+    if states:
+        insights.append(f"Orders are in states: {states}")
+
+    return format_response(
+    data=records,
+    summary={
+        "count": len(records),
+        "states": states
+    },
+    insights=insights,
+    meta={
+        "model": "sale.order",
+        "record_count": len(records)
+    }
+)
 
 
 #section 5: tool 22 - get sale order lines
@@ -1098,6 +1283,7 @@ def get_sale_order_lines(
         "price_subtotal",
         "price_total",
         "discount",
+        "write_date",
     ]
 
     records = client.search_read(
@@ -1118,7 +1304,28 @@ def get_sale_order_lines(
         if record.get("order_id"):
             record["order_id"] = record["order_id"][0]
 
-    return records
+    insights = []
+
+    total_items = sum(r["product_uom_qty"] for r in records) if records else 0
+
+    if records:
+        insights.append(f"{len(records)} line items found")
+        insights.append(f"Total quantity across items: {total_items}")
+    else:
+        insights.append("No line items found for this order")
+
+    return format_response(
+    data=records,
+    summary={
+        "line_count": len(records),
+        "total_items": total_items
+    },
+    insights=insights,
+    meta={
+        "model": "sale.order.line",
+        "record_count": len(records)
+    }
+)
 
 
 #section 5: tool 23 - create sale order
@@ -1312,6 +1519,27 @@ def create_sale_order(
         values["client_order_ref"] = client_order_ref
 
     # ------------------------------------------------------------------
+    # Centralized validation layer
+    # ------------------------------------------------------------------
+
+    validation = validate_write_payload(
+        client=client,
+        model_name="sale.order",
+        values=values,
+        operation="create",
+    )
+
+    if not validation["valid"]:
+        raise ValidationError(
+            "Payload validation failed: "
+            + "; ".join(validation["errors"])
+        )
+
+    values = validation["cleaned_values"]
+
+    insights = []
+
+    # ------------------------------------------------------------------
     # Create order — Odoo sets state='draft' automatically
     # ------------------------------------------------------------------
     order_id = client.create("sale.order", values)
@@ -1330,17 +1558,41 @@ def create_sale_order(
         limit=1,
     )[0]
 
-    return {
+    # ----------------------------
+    # Insights (reasoning hints)
+    # ----------------------------
+
+    insights.append("Sales order created in draft state")
+
+    if created["state"] == "draft":
+        insights.append("Order requires confirmation before processing")
+
+    if any(line["stock_warning"] for line in line_summary):
+        insights.append("Some products have low stock warnings")
+    else:
+        insights.append("All products have sufficient stock at order time")
+
+    return format_response(
+    data={
         "order_id": created["id"],
         "order_name": created["name"],
         "partner_id": partner_id,
         "partner_name": partner_name,
+        "lines": line_summary,
+    },
+    summary={
         "amount_total": created["amount_total"],
         "state": created["state"],
         "date_order": created["date_order"],
         "validity_date": created.get("validity_date"),
-        "lines": line_summary,
+    },
+    insights=insights,
+    meta={
+        "model": "sale.order",
+        "record_count": 1,
+        "operation": "create"
     }
+)
 
 
 #section 5: tool 24 - get customer order history
@@ -1492,8 +1744,10 @@ def get_customer_order_history(
             "amount_total",
             "state",
             "user_id",
+            "write_date",
         ],
         limit=100,
+        order="date_order desc",
     )
 
     # ------------------------------------------------------------------
@@ -1549,24 +1803,52 @@ def get_customer_order_history(
     most_recent_order_date = latest_date(orders)
     most_recent_active_order_date = latest_date(active_orders)
 
+    # ----------------------------
+    # Insights (simple reasoning)
+    # ----------------------------
+
+    insights = []
+
+    if total_orders > 0:
+        insights.append(f"Customer has {total_orders} total orders")
+
+    if total_orders > 100:
+        insights.append("Order list is truncated to latest 100 records")
+
+    if total_revenue > 0:
+        insights.append(f"Total revenue from confirmed orders is {round(total_revenue, 2)}")
+
+    if average_order_value > 0:
+        insights.append(f"Average order value is {round(average_order_value, 2)}")
+
+    if most_recent_order_date:
+        insights.append(f"Most recent order date is {most_recent_order_date}")
+
     # ------------------------------------------------------------------
     # Return
     # ------------------------------------------------------------------
-    return {
+    return format_response(
+    data={
         "partner_id": partner_id,
         "partner_name": partner_name,
         "orders": orders,
-        "summary": {
-            "total_orders": total_orders,
-            "total_orders_returned": len(orders),
-            "truncated": total_orders > 100,
-            "total_revenue": round(total_revenue, 2),
-            "average_order_value": round(average_order_value, 2),
-            "most_recent_order_date": most_recent_order_date,
-            "most_recent_active_order_date": most_recent_active_order_date,
-            "state_breakdown": state_breakdown,
-        },
+    },
+    summary={
+        "total_orders": total_orders,
+        "total_orders_returned": len(orders),
+        "truncated": total_orders > 100,
+        "total_revenue": round(total_revenue, 2),
+        "average_order_value": round(average_order_value, 2),
+        "most_recent_order_date": most_recent_order_date,
+        "most_recent_active_order_date": most_recent_active_order_date,
+        "state_breakdown": state_breakdown,
+    },
+    insights=insights,
+    meta={
+        "model": "sale.order",
+        "record_count": len(orders)
     }
+)
 
 #section 6: tool 25 - get purchase order
 def get_purchase_order(
@@ -1655,6 +1937,7 @@ def get_purchase_order(
             "date_planned",
             "amount_total",
             "state",
+            "wrie_date",
         ],
         limit=limit,
     )
@@ -1667,7 +1950,30 @@ def get_purchase_order(
             r["partner_name"] = r["partner_id"][1]
             r["partner_id"] = r["partner_id"][0]
 
-    return records
+    insights = []
+
+    if records:
+        insights.append(f"{len(records)} purchase orders found")
+    else:
+        insights.append("No purchase orders found")
+
+    states = list(set(r["state"] for r in records)) if records else []
+
+    if states:
+        insights.append(f"Orders are in states: {states}")
+
+    return format_response(
+    data=records,
+    summary={
+        "count": len(records),
+        "states": states
+    },
+    insights=insights,
+    meta={
+        "model": "purchase.order",
+        "record_count": len(records)
+    }
+)
 
 #section 6: tool 26 - get purchase order lines
 def get_purchase_order_lines(
@@ -1730,6 +2036,7 @@ def get_purchase_order_lines(
             "product_qty",
             "price_unit",
             "date_planned",
+            "write_date",
         ],
         limit=limit,
     )
@@ -1745,10 +2052,31 @@ def get_purchase_order_lines(
         if r.get("order_id"):
             r["order_id"] = r["order_id"][0]
 
-    return records
+    insights = []
+
+    total_items = sum(r["product_qty"] for r in records) if records else 0
+
+    if records:
+        insights.append(f"{len(records)} purchase order lines found")
+        insights.append(f"Total quantity ordered: {total_items}")
+    else:
+        insights.append("No line items found for this purchase order")
+
+    return format_response(
+    data=records,
+    summary={
+        "line_count": len(records),
+        "total_items": total_items
+    },
+    insights=insights,
+    meta={
+        "model": "purchase.order.line",
+        "record_count": len(records)
+    }
+)
 
 
-#section 6: tol 27 - check material availability
+#section 6: tool 27 - check material availability
 # tools/purchasing/check_material_availability.py
 
 import datetime
@@ -1852,6 +2180,9 @@ def check_material_availability(
     reserved = stock_agg[0].get("reserved_quantity", 0.0) or 0.0 if stock_agg else 0.0
     current_stock = total_qty - reserved
 
+    insights = []
+    next_action = None
+
     # ------------------------------------------------------------------
     # Incoming qty — server-side sum via read_group
     # Filtered by date_needed if provided
@@ -1929,20 +2260,49 @@ def check_material_availability(
                         expected_available_date = None
                     break
 
+    # ----------------------------
+    # Insights (reasoning)
+    # ----------------------------
+
+    if can_fulfill:
+        insights.append("Sufficient material available to fulfill requirement")
+    else:
+        insights.append(f"Material shortage of {shortage} units")
+
+    if current_stock > 0:
+        insights.append(f"Current stock available: {round(current_stock, 2)}")
+
+    if incoming_qty > 0:
+        insights.append(f"Incoming purchase quantity: {round(incoming_qty, 2)}")
+    else:
+        insights.append("No incoming purchase orders found")
+
+    if expected_available_date:
+        insights.append(f"Material expected to be available by {expected_available_date}")
+
+    if not can_fulfill:
+        next_action = "create_purchase_order"
+
     # ------------------------------------------------------------------
     # Return
     # ------------------------------------------------------------------
-    return {
+    return wrap_response(
+    data={
         "product_id": product_id,
         "product_name": product_name,
         "current_stock": round(current_stock, 2),
         "incoming_qty": round(incoming_qty, 2),
         "total_available": round(total_available, 2),
         "quantity_needed": quantity_needed,
-        "can_fulfill": can_fulfill,
-        "shortage": shortage,
         "expected_available_date": expected_available_date,
-    }
+    },
+    summary={
+        "can_fulfill": can_fulfill,
+        "shortage": shortage
+    },
+    insights=insights,
+    model="stock.quant + purchase.order.line"
+)
 
 #section 7: tool 28 - get manufacturing order
 def get_manufacturing_order(
@@ -2019,6 +2379,7 @@ def get_manufacturing_order(
             "date_start",
             "date_finished",
             "state",
+            "write_date",
         ],
         limit=limit,
     )
@@ -2036,7 +2397,32 @@ def get_manufacturing_order(
 
         r["remaining_qty"] = round(remaining, 2)
 
-    return records
+    insights = []
+
+    if records:
+        insights.append(f"{len(records)} manufacturing orders found")
+    else:
+        insights.append("No manufacturing orders found")
+
+    states = list(set(r["state"] for r in records)) if records else []
+
+    if states:
+        insights.append(f"Orders are in states: {states}")
+
+    in_progress = [r for r in records if r.get("state") == "progress"]
+
+    if in_progress:
+        insights.append(f"{len(in_progress)} orders currently in production")
+
+    return wrap_response(
+    data=records,
+    summary={
+        "count": len(records),
+        "states": states
+    },
+    insights=insights,
+    model="mrp.production"
+)
 
 #section 7: tool 29 - check manufacturing capacity
 def check_manufacturing_capacity(
@@ -2095,6 +2481,8 @@ def check_manufacturing_capacity(
     estimated_capacity_used = None
     available_capacity = None
 
+    insights = []
+
     if theoretical_capacity:
 
         if theoretical_capacity <= 0:
@@ -2109,18 +2497,41 @@ def check_manufacturing_capacity(
             max(theoretical_capacity - total_planned, 0),
             2
         )
+    
+    if scheduled_orders > 0:
+        insights.append(f"{scheduled_orders} manufacturing orders scheduled")
 
-    return {
+    if total_planned > 0:
+        insights.append(f"Total planned production: {round(total_planned, 2)} units")
+
+    if theoretical_capacity:
+        insights.append(f"Theoretical capacity: {theoretical_capacity}")
+
+        if estimated_capacity_used is not None:
+            insights.append(f"Capacity utilization: {estimated_capacity_used}%")
+
+        if available_capacity is not None:
+            insights.append(f"Available capacity: {available_capacity}")
+    else:
+        insights.append("No theoretical capacity provided")
+
+    return wrap_response(
+    data={
         "date_range": {
             "from": date_from,
             "to": date_to,
         },
         "scheduled_orders": scheduled_orders,
         "total_scheduled_qty": round(total_planned, 2),
+    },
+    summary={
         "theoretical_capacity": theoretical_capacity,
         "estimated_capacity_used": estimated_capacity_used,
         "available_capacity": available_capacity,
-    }
+    },
+    insights=insights,
+    model="mrp.production"
+)
 
 #section 7: tool 30 - get bill of materials
 def get_bill_of_materials(
@@ -2160,15 +2571,21 @@ def get_bill_of_materials(
     )
 
     if bom_count == 0:
-        return {
-            "product_id": product_id,
-            "product_name": product_name,
-            "bom_id": None,
-            "bom_qty": None,
-            "multiple_boms": False,
-            "components_truncated": False,
-            "bom_line_ids": [],
-        }
+        return wrap_response(
+            data={
+                "product_id": product_id,
+                "product_name": product_name,
+                "bom_line_ids": [],
+            },
+            summary={
+                "bom_id": None,
+                "bom_qty": None,
+                "multiple_boms": False,
+                "components_truncated": False,
+            },
+            insights=["No bill of materials found for this product"],
+            model="mrp.bom"
+        )
 
     bom = client.search_read(
         model="mrp.bom",
@@ -2195,6 +2612,7 @@ def get_bill_of_materials(
         limit=100,
     )
 
+    insights = []
     components = []
 
     for l in lines:
@@ -2215,15 +2633,32 @@ def get_bill_of_materials(
             "component_per_unit": round(qty / bom_qty, 6) if bom_qty else None
         })
 
-    return {
+    if components:
+        insights.append(f"{len(components)} components found in BOM")
+    else:
+        insights.append("No components found in BOM")
+
+    if bom_count > 1:
+        insights.append("Multiple BOMs exist for this product")
+
+    if line_count > 100:
+        insights.append("Component list truncated to 100 records")
+
+    return wrap_response(
+    data={
         "product_id": product_id,
         "product_name": product_name,
+        "bom_line_ids": components,
+    },
+    summary={
         "bom_id": bom_id,
         "bom_qty": bom_qty,
         "multiple_boms": bom_count > 1,
         "components_truncated": line_count > 100,
-        "bom_line_ids": components,
-    }
+    },
+    insights=insights,
+    model="mrp.bom"
+)
 
 #section 7: tool 31 - check manufacturing feasibility
 def check_manufacturing_feasibility(
@@ -2239,24 +2674,37 @@ def check_manufacturing_feasibility(
 
     if quantity <= 0:
         raise ValidationError("quantity must be positive.")
+    
+    insights = []
 
     # ------------------------------------------------
     # STEP 1 — Fetch BOM
     # ------------------------------------------------
 
-    bom = get_bill_of_materials(product_id=product_id)
+    bom_response = get_bill_of_materials(product_id=product_id)
 
-    if not bom["bom_id"]:
-        return {
-            "feasible": False,
-            "reason": "no_bom_defined",
-            "materials": [],
-            "blocking_components": [],
-            "max_producible_quantity": 0,
-            "capacity": None,
-        }
+    bom_data = bom_response["data"]
+    bom_summary = bom_response["summary"]
 
-    components = bom.get("bom_line_ids", [])
+    if not bom_summary.get("bom_id"):
+        insights.append("No bill of materials defined for this product")
+
+        return wrap_response(
+            data={
+                "materials": [],
+                "blocking_components": [],
+            },
+            summary={
+                "feasible": False,
+                "reason": "no_bom_defined",
+                "max_producible_quantity": 0,
+                "capacity": None,
+            },
+            insights=insights,
+            model="mrp.production"
+        )
+
+    components = bom_data.get("bom_line_ids", [])
 
     material_results = []
     blocking_components = []
@@ -2279,24 +2727,27 @@ def check_manufacturing_feasibility(
         per_unit = comp.get("component_per_unit") or 0
         required_qty = round(per_unit * quantity, 2)
 
-        availability = check_material_availability(
-            product_id=comp_id,
-            quantity_needed=required_qty,
-            date_needed=date_needed,
-        )
+        availability_response = check_material_availability(
+        product_id=comp_id,
+        quantity_needed=required_qty,
+        date_needed=date_needed,
+    )
 
-        available_total = availability.get("total_available", 0)
+        availability_data = availability_response["data"]
+        availability_summary = availability_response["summary"]
+
+        available_total = availability_data.get("total_available", 0)
 
         result = {
-            "component_id": comp_id,
-            "component_name": comp_name,
-            "required_qty": required_qty,
-            "available_now": availability.get("current_stock", 0),
-            "incoming_qty": availability.get("incoming_qty", 0),
-            "total_available": available_total,
-            "can_fulfill": availability.get("can_fulfill", False),
-            "shortage": availability.get("shortage", 0),
-        }
+        "component_id": comp_id,
+        "component_name": comp_name,
+        "required_qty": required_qty,
+        "available_now": availability_data.get("current_stock", 0),
+        "incoming_qty": availability_data.get("incoming_qty", 0),
+        "total_available": available_total,
+        "can_fulfill": availability_summary.get("can_fulfill", False),
+        "shortage": availability_summary.get("shortage", 0),
+    }
 
         material_results.append(result)
 
@@ -2308,14 +2759,14 @@ def check_manufacturing_feasibility(
             possible_units = available_total / per_unit
             max_producible = min(max_producible, possible_units)
 
-        if not availability.get("can_fulfill", False):
+        if not availability_summary.get("can_fulfill", False):
 
-            expected_date = availability.get("expected_available_date")
+            expected_date = availability_data.get("expected_available_date")
 
             blocking_components.append({
                 "component_id": comp_id,
                 "component_name": comp_name,
-                "shortage": availability.get("shortage", 0),
+                "shortage": availability_summary.get("shortage", 0),
                 "expected_available_date": expected_date,
             })
 
@@ -2337,15 +2788,23 @@ def check_manufacturing_feasibility(
 
     if blocking_components:
 
-        return {
-            "feasible": False,
-            "reason": "material_shortage",
-            "materials": material_results,
-            "blocking_components": blocking_components,
-            "max_producible_quantity": max_producible,
-            "materials_ready_date": latest_material_date,
-            "capacity": None,
-        }
+        insights.append("Material shortage detected")
+
+        return wrap_response(
+            data={
+                "materials": material_results,
+                "blocking_components": blocking_components,
+            },
+            summary={
+                "feasible": False,
+                "reason": "material_shortage",
+                "max_producible_quantity": max_producible,
+                "materials_ready_date": latest_material_date,
+                "capacity": None,
+            },
+            insights=insights,
+            model="mrp.production"
+        )
 
     # ------------------------------------------------
     # STEP 4 — Capacity analysis
@@ -2354,41 +2813,68 @@ def check_manufacturing_feasibility(
     capacity = None
 
     if date_needed and theoretical_capacity:
+        today = date.today()
 
-        capacity = check_manufacturing_capacity(
-            date_from=date_needed,
-            date_to=date_needed,
+        required_date = datetime.strptime(
+            date_needed,
+            "%Y-%m-%d"
+        ).date()
+    
+        capacity_window_start = today.isoformat()
+        capacity_window_end = required_date.isoformat()
+
+        capacity_response = check_manufacturing_capacity(
+            date_from=capacity_window_start,
+            date_to=capacity_window_end,
             theoretical_capacity=theoretical_capacity,
         )
 
-        if capacity.get("available_capacity") is not None:
+        capacity_data = capacity_response["data"]
+        capacity_summary = capacity_response["summary"]
 
-            if capacity["available_capacity"] < quantity:
+        if capacity_summary.get("available_capacity") is not None:
 
-                return {
-                    "feasible": False,
-                    "reason": "insufficient_capacity",
-                    "materials": material_results,
-                    "blocking_components": [],
-                    "max_producible_quantity": max_producible,
-                    "capacity": capacity,
-                }
+            if capacity_summary["available_capacity"] < quantity:
+
+                insights.append("Insufficient manufacturing capacity")
+
+                return wrap_response(
+                    data={
+                        "materials": material_results,
+                        "blocking_components": [],
+                    },
+                    summary={
+                        "feasible": False,
+                        "reason": "insufficient_capacity",
+                        "max_producible_quantity": max_producible,
+                        "capacity": capacity_summary,
+                    },
+                    insights=insights,
+                    model="mrp.production"
+                )
 
     # ------------------------------------------------
     # STEP 5 — Success
     # ------------------------------------------------
 
-    return {
-        "feasible": True,
-        "reason": None,
-        "materials": material_results,
-        "blocking_components": [],
-        "max_producible_quantity": max_producible,
-        "capacity": capacity,
-    }
+    insights.append("Manufacturing is feasible")
+
+    return wrap_response(
+        data={
+            "materials": material_results,
+            "blocking_components": [],
+        },
+        summary={
+            "feasible": True,
+            "reason": None,
+            "max_producible_quantity": max_producible,
+            "capacity": capacity,
+        },
+        insights=insights,
+        model="mrp.production"
+    )
 
 # section 7: tool 32 - explode bill of materials
-
 def explode_bill_of_materials(
     *,
     product_id: int,
@@ -2410,15 +2896,17 @@ def explode_bill_of_materials(
     try:
 
         if product_id in _bom_cache:
-            bom = _bom_cache[product_id]
+            bom_data, bom_summary = _bom_cache[product_id]
         else:
-            bom = get_bill_of_materials(product_id=product_id)
-            _bom_cache[product_id] = bom
+            bom_response = get_bill_of_materials(product_id=product_id)
+            bom_data = bom_response["data"]
+            bom_summary = bom_response["summary"]
+            _bom_cache[product_id] = (bom_data, bom_summary)
 
     except ValidationError:
         return []
 
-    if not bom.get("bom_id"):
+    if not bom_summary.get("bom_id"):
         return []
 
     exploded_components: Dict[int, Dict[str, Any]] = {}
@@ -2427,7 +2915,7 @@ def explode_bill_of_materials(
     # Expand BOM
     # ------------------------------------------------
 
-    for comp in bom.get("bom_line_ids", []):
+    for comp in bom_data.get("bom_line_ids", []):
 
         comp_id = comp.get("component_id")
         comp_name = comp.get("component_name")
@@ -2445,15 +2933,17 @@ def explode_bill_of_materials(
         try:
 
             if comp_id in _bom_cache:
-                sub_bom = _bom_cache[comp_id]
+                sub_bom_data, sub_bom_summary = _bom_cache[comp_id]
             else:
-                sub_bom = get_bill_of_materials(product_id=comp_id)
-                _bom_cache[comp_id] = sub_bom
+                sub_bom_response = get_bill_of_materials(product_id=comp_id)
+                sub_bom_data = sub_bom_response["data"]
+                sub_bom_summary = sub_bom_response["summary"]
+                _bom_cache[comp_id] = (sub_bom_data, sub_bom_summary)
 
         except ValidationError:
             continue
 
-        if sub_bom.get("bom_id"):
+        if sub_bom_summary.get("bom_id"):
 
             sub_components = explode_bill_of_materials(
                 product_id=comp_id,
@@ -2493,3 +2983,1223 @@ def explode_bill_of_materials(
                 exploded_components[comp_id]["required_qty"] += round(required_qty, 2)
 
     return list(exploded_components.values())
+
+
+# section 8: tool 33 - get customer invoices
+def get_customer_invoices(
+    *,
+    partner_id: Optional[int] = None,
+    move_type: Optional[str] = None,
+    payment_state: Optional[str] = None,
+    invoice_date_from: Optional[str] = None,
+    invoice_date_to: Optional[str] = None,
+    limit: int = 20,
+) -> List[Dict[str, Any]]:
+    """
+    Tool ID: 033
+    Model: account.move
+    Risk: LOW (Read Only)
+
+    Returns customer invoices and refunds matching the given filters.
+
+    Safety guarantees:
+    - Always restricted to out_invoice and out_refund
+    - Cancelled invoices excluded
+    - At least one filter required (prevents full table scan)
+    - Maximum 100 records per request
+    - Company scope enforced at OdooClient level
+    """
+
+    client = OdooClient()
+
+    # ----------------------------------------------------------
+    # Validate limit
+    # ----------------------------------------------------------
+    if limit <= 0:
+        raise ValidationError("limit must be positive.")
+
+    if limit > 100:
+        raise ValidationError("Limit cannot exceed 100.")
+
+    # ----------------------------------------------------------
+    # Validate move_type
+    # ----------------------------------------------------------
+    allowed_move_types = ["out_invoice", "out_refund"]
+
+    if move_type and move_type not in allowed_move_types:
+        raise ValidationError(
+            f"Invalid move_type '{move_type}'. Allowed: {allowed_move_types}"
+        )
+
+    # ----------------------------------------------------------
+    # Validate payment_state
+    # ----------------------------------------------------------
+    allowed_payment_states = [
+        "not_paid",
+        "in_payment",
+        "paid",
+        "partial",
+        "reversed",
+    ]
+
+    if payment_state and payment_state not in allowed_payment_states:
+        raise ValidationError(
+            f"Invalid payment_state '{payment_state}'. "
+            f"Allowed: {allowed_payment_states}"
+        )
+
+    # ----------------------------------------------------------
+    # Validate date formats
+    # ----------------------------------------------------------
+    if invoice_date_from:
+        try:
+            datetime.date.fromisoformat(invoice_date_from)
+        except ValueError:
+            raise ValidationError(
+                "invoice_date_from must be in YYYY-MM-DD format."
+            )
+
+    if invoice_date_to:
+        try:
+            datetime.date.fromisoformat(invoice_date_to)
+        except ValueError:
+            raise ValidationError(
+                "invoice_date_to must be in YYYY-MM-DD format."
+            )
+
+    if invoice_date_from and invoice_date_to and invoice_date_to < invoice_date_from:
+        raise ValidationError(
+            "invoice_date_to cannot be before invoice_date_from."
+        )
+
+    # ----------------------------------------------------------
+    # Require at least one filter (prevents full table scan)
+    # ----------------------------------------------------------
+    if not any([
+        partner_id,
+        move_type,
+        payment_state,
+        invoice_date_from,
+        invoice_date_to,
+    ]):
+        raise ValidationError(
+            "At least one filter is required."
+        )
+
+    # ----------------------------------------------------------
+    # Build domain
+    # Base domain always enforces safety restrictions
+    # ----------------------------------------------------------
+    domain = [
+        ("state", "!=", "cancel"),
+        ("move_type", "in", ["out_invoice", "out_refund"]),
+    ]
+
+    if partner_id:
+        domain.append(("partner_id", "=", partner_id))
+
+    if move_type:
+        domain.append(("move_type", "=", move_type))
+
+    if payment_state:
+        domain.append(("payment_state", "=", payment_state))
+
+    if invoice_date_from:
+        domain.append(("invoice_date", ">=", invoice_date_from))
+
+    if invoice_date_to:
+        domain.append(("invoice_date", "<=", invoice_date_to))
+
+    # ----------------------------------------------------------
+    # Execute query
+    # ----------------------------------------------------------
+    records = client.search_read(
+        model="account.move",
+        domain=domain,
+        fields=[
+            "id",
+            "name",
+            "move_type",
+            "partner_id",
+            "invoice_date",
+            "invoice_date_due",
+            "amount_total",
+            "amount_residual",
+            "payment_state",
+            "state",
+            "write_date",
+        ],
+        limit=limit,
+    )
+
+    # ----------------------------------------------------------
+    # Normalize Many2one fields
+    # ----------------------------------------------------------
+    for r in records:
+        if r.get("partner_id"):
+            r["partner_name"] = r["partner_id"][1]
+            r["partner_id"] = r["partner_id"][0]
+
+    insights = []
+
+    if records:
+        insights.append(f"{len(records)} invoices found")
+    else:
+        insights.append("No invoices found")
+
+    states = list(set(r["state"] for r in records)) if records else []
+    if states:
+        insights.append(f"Invoices in states: {states}")
+
+    payment_states = list(set(r["payment_state"] for r in records)) if records else []
+    if payment_states:
+        insights.append(f"Payment states observed: {payment_states}")
+
+    return wrap_response(
+    data=records,
+    summary={
+        "count": len(records),
+        "states": states,
+        "payment_states": payment_states,
+    },
+    insights=insights,
+    model="account.move"
+)
+
+
+# section 8: tool 34 - check customer credit
+def check_customer_credit(
+    *,
+    partner_id: int,
+) -> Dict[str, Any]:
+    """
+    Tool ID: 034
+    Model: res.partner + account.move (Composite Read)
+    Risk: LOW (Read Only)
+
+    Returns credit status for a customer.
+
+    Financial aggregations are server-side — no truncation possible.
+
+    total_due includes:
+        - not_paid
+        - partial
+
+    Excludes:
+        - in_payment (payment already in transit)
+
+    Returns:
+        {
+            partner_id,
+            partner_name,
+            credit_limit,
+            total_due,
+            available_credit,
+            can_extend_credit,
+            credit_status,
+            overdue_invoices: {
+                count,
+                total_amount,
+                oldest_due_date
+            },
+            total_due_note
+        }
+    """
+
+    client = OdooClient()
+
+    # ----------------------------------------------------------
+    # Validate partner_id
+    # ----------------------------------------------------------
+    if not isinstance(partner_id, int) or partner_id <= 0:
+        raise ValidationError("partner_id must be a positive integer.")
+
+    # ----------------------------------------------------------
+    # Validate customer exists
+    # ----------------------------------------------------------
+    partner = client.search_read(
+        model="res.partner",
+        domain=[
+            ("id", "=", partner_id),
+            ("customer_rank", ">", 0),
+        ],
+        fields=[
+            "id",
+            "name",
+            "credit_limit",
+        ],
+        limit=1,
+    )
+
+    if not partner:
+        raise ValidationError(
+            f"Customer {partner_id} does not exist or is not a customer."
+        )
+
+    partner_name = partner[0]["name"]
+
+    # Treat False / 0 as "no credit limit configured"
+    credit_limit = partner[0].get("credit_limit") or None
+    if credit_limit == 0:
+        credit_limit = None
+
+    # ----------------------------------------------------------
+    # Base invoice domain for unpaid invoices
+    # ----------------------------------------------------------
+    unpaid_domain = [
+        ("partner_id", "=", partner_id),
+        ("move_type", "=", "out_invoice"),
+        ("state", "=", "posted"),
+        ("payment_state", "in", ["not_paid", "partial"]),
+    ]
+
+    # ----------------------------------------------------------
+    # Total outstanding balance (server-side aggregation)
+    # ----------------------------------------------------------
+    due_agg = client.read_group(
+        model="account.move",
+        domain=unpaid_domain,
+        fields=["amount_residual:sum"],
+        groupby=[],
+    )
+
+    total_due = (
+        due_agg[0].get("amount_residual", 0.0)
+        if due_agg else 0.0
+    )
+
+    # ----------------------------------------------------------
+    # Overdue invoices
+    # ----------------------------------------------------------
+    today = datetime.date.today().isoformat()
+
+    overdue_domain = unpaid_domain + [
+        ("invoice_date_due", "<", today)
+    ]
+
+    overdue_agg = client.read_group(
+        model="account.move",
+        domain=overdue_domain,
+        fields=["amount_residual:sum"],
+        groupby=[],
+    )
+
+    overdue_total = (
+        overdue_agg[0].get("amount_residual", 0.0)
+        if overdue_agg else 0.0
+    )
+
+    overdue_count = client.search_count(
+        model="account.move",
+        domain=overdue_domain,
+    )
+
+    # ----------------------------------------------------------
+    # Oldest overdue invoice
+    # ----------------------------------------------------------
+    oldest_due_date = None
+
+    if overdue_count > 0:
+
+        oldest = client.search_read(
+            model="account.move",
+            domain=overdue_domain,
+            fields=["invoice_date_due"],
+            limit=1,
+            order="invoice_date_due asc",
+        )
+
+        if oldest:
+            oldest_due_date = oldest[0].get("invoice_date_due")
+
+    # ----------------------------------------------------------
+    # Credit calculations
+    # ----------------------------------------------------------
+    available_credit = None
+    can_extend_credit = None
+
+    if credit_limit is not None:
+
+        available_credit = round(
+            max(credit_limit - total_due, 0),
+            2
+        )
+
+        can_extend_credit = total_due <= credit_limit
+
+    # ----------------------------------------------------------
+    # Credit status classification
+    # ----------------------------------------------------------
+    if credit_limit is None:
+        credit_status = "no_limit_configured"
+
+    elif overdue_count > 0:
+        credit_status = "overdue"
+
+    elif total_due > credit_limit:
+        credit_status = "over_limit"
+
+    elif credit_limit > 0 and available_credit < credit_limit * 0.1:
+        credit_status = "near_limit"
+
+    else:
+        credit_status = "good_standing"
+
+    insights = []
+
+    if credit_limit is None:
+        insights.append("Customer has no credit limit configured")
+
+    if total_due > 0:
+        insights.append(f"Customer has outstanding balance of {round(total_due, 2)}")
+
+    if overdue_count > 0:
+        insights.append(f"{overdue_count} overdue invoices detected")
+
+    if available_credit is not None:
+        insights.append(f"Available credit: {available_credit}")
+
+    insights.append(f"Credit status classified as '{credit_status}'")
+
+    # ----------------------------------------------------------
+    # Return structured result
+    # ----------------------------------------------------------
+    return wrap_response(
+    data={
+        "partner_id": partner_id,
+        "partner_name": partner_name,
+        "overdue_invoices": {
+            "count": overdue_count,
+            "total_amount": round(overdue_total, 2),
+            "oldest_due_date": oldest_due_date,
+        },
+    },
+    summary={
+        "credit_limit": credit_limit,
+        "total_due": round(total_due, 2),
+        "available_credit": available_credit,
+        "can_extend_credit": can_extend_credit,
+        "credit_status": credit_status,
+        "total_due_note": (
+            "Includes not_paid and partial invoices only. "
+            "Excludes in_payment (payment already in transit)."
+        ),
+    },
+    insights=insights,
+    model="res.partner + account.move"
+)
+
+
+# section 8: tool 35 - get payment history
+def get_payment_history(
+    *,
+    partner_id: int,
+    limit: int = 50,
+) -> Dict[str, Any]:
+    """
+    Tool ID: 035
+    Model: account.move (paid invoices only)
+    Risk: LOW (Read Only)
+
+    Returns paid invoice history for a customer as a proxy for
+    payment behavior.
+
+    IMPORTANT — What 'payment_terms_days' actually measures:
+        invoice_date_due - invoice_date = payment terms length.
+        This reflects agreed payment terms, NOT actual lateness.
+
+    Actual payment date is not stored directly on account.move.
+
+    Summary analytics are server-side (always accurate regardless of limit).
+    Display list is paginated (max 100, truncated flag included).
+    """
+
+    client = OdooClient()
+
+    # ----------------------------------------------------------
+    # Validate parameters
+    # ----------------------------------------------------------
+    if not isinstance(partner_id, int) or partner_id <= 0:
+        raise ValidationError("partner_id must be a positive integer.")
+
+    if limit <= 0:
+        raise ValidationError("limit must be positive.")
+
+    if limit > 100:
+        raise ValidationError("Limit cannot exceed 100.")
+
+    # ----------------------------------------------------------
+    # Validate customer exists
+    # ----------------------------------------------------------
+    partner = client.search_read(
+        model="res.partner",
+        domain=[
+            ("id", "=", partner_id),
+            ("customer_rank", ">", 0),
+        ],
+        fields=["id", "name"],
+        limit=1,
+    )
+
+    if not partner:
+        raise ValidationError(
+            f"Customer {partner_id} does not exist or is not a customer."
+        )
+
+    partner_name = partner[0]["name"]
+
+    # ----------------------------------------------------------
+    # Base domain for paid invoices
+    # ----------------------------------------------------------
+    paid_domain = [
+        ("partner_id", "=", partner_id),
+        ("move_type", "=", "out_invoice"),
+        ("state", "=", "posted"),
+        ("payment_state", "=", "paid"),
+    ]
+
+    # ----------------------------------------------------------
+    # Server-side aggregation (always accurate)
+    # ----------------------------------------------------------
+    summary_agg = client.read_group(
+        model="account.move",
+        domain=paid_domain,
+        fields=["amount_total:sum"],
+        groupby=[],
+    )
+
+    total_paid_amount = (
+        summary_agg[0].get("amount_total", 0.0)
+        if summary_agg else 0.0
+    )
+
+    total_paid_count = (
+        summary_agg[0].get("__count", 0)
+        if summary_agg else 0
+    )
+
+    # ----------------------------------------------------------
+    # Paginated invoice list
+    # ----------------------------------------------------------
+    invoices = client.search_read(
+        model="account.move",
+        domain=paid_domain,
+        fields=[
+            "id",
+            "name",
+            "invoice_date",
+            "invoice_date_due",
+            "amount_total",
+        ],
+        limit=limit,
+        order="invoice_date desc",
+    )
+
+    payment_records: List[Dict[str, Any]] = []
+    terms_days_list: List[int] = []
+
+    for inv in invoices:
+
+        invoice_date = inv.get("invoice_date")
+        due_date = inv.get("invoice_date_due")
+
+        payment_terms_days = None
+
+        if invoice_date and due_date:
+            try:
+                d1 = datetime.date.fromisoformat(str(invoice_date))
+                d2 = datetime.date.fromisoformat(str(due_date))
+
+                payment_terms_days = (d2 - d1).days
+                terms_days_list.append(payment_terms_days)
+
+            except Exception:
+                pass
+
+        payment_records.append({
+            "invoice_id": inv["id"],
+            "invoice_number": inv["name"],
+            "invoice_date": invoice_date,
+            "invoice_date_due": due_date,
+            "amount": float(inv.get("amount_total") or 0.0),
+            "payment_terms_days": payment_terms_days,
+        })
+
+    # ----------------------------------------------------------
+    # Average payment terms
+    # ----------------------------------------------------------
+    average_payment_terms_days = (
+        round(sum(terms_days_list) / len(terms_days_list), 2)
+        if terms_days_list else None
+    )
+
+    # ----------------------------------------------------------
+    # Payment profile classification
+    # ----------------------------------------------------------
+    if total_paid_count == 0:
+        payment_profile = "no_payment_history"
+
+    elif total_paid_count >= 10:
+        payment_profile = "established_customer"
+
+    elif total_paid_count >= 3:
+        payment_profile = "active_customer"
+
+    else:
+        payment_profile = "new_customer"
+
+    insights = []
+
+    if total_paid_count > 0:
+        insights.append(f"{total_paid_count} paid invoices found")
+
+    if total_paid_amount > 0:
+        insights.append(f"Total paid amount is {round(total_paid_amount, 2)}")
+
+    if average_payment_terms_days is not None:
+        insights.append(f"Average payment terms: {average_payment_terms_days} days")
+
+    insights.append(f"Customer classified as '{payment_profile}'")
+
+    if total_paid_count > limit:
+        insights.append("Displayed results are truncated to limit")
+
+    # ----------------------------------------------------------
+    # Final result
+    # ----------------------------------------------------------
+    return wrap_response(
+    data={
+        "partner_id": partner_id,
+        "partner_name": partner_name,
+        "payments": payment_records,
+    },
+    summary={
+        "total_paid_invoices": total_paid_count,
+        "total_paid_amount": round(total_paid_amount, 2),
+        "total_returned": len(payment_records),
+        "truncated": total_paid_count > limit,
+        "average_payment_terms_days": average_payment_terms_days,
+        "payment_profile": payment_profile,
+        "data_note": (
+            "payment_terms_days = invoice_date_due minus invoice_date. "
+            "This reflects agreed payment terms, not actual lateness. "
+            "Actual payment date is not stored on account.move."
+        ),
+    },
+    insights=insights,
+    model="account.move"
+)
+
+# section 9: tool 36 - check order fulfillment feasibility
+def check_order_fulfillment_feasibility(
+    *,
+    partner_id: int,
+    product_id: int,
+    quantity: float,
+    date_required: str,
+) -> Dict[str, Any]:
+
+    client = OdooClient()
+
+    # ------------------------------------------------
+    # INPUT VALIDATION
+    # ------------------------------------------------
+
+    if not partner_id:
+        raise ValidationError("partner_id is required.")
+
+    if not product_id:
+        raise ValidationError("product_id is required.")
+
+    if quantity <= 0:
+        raise ValidationError("quantity must be positive.")
+
+    try:
+        required_date = datetime.date.fromisoformat(date_required)
+    except ValueError:
+        raise ValidationError("date_required must be YYYY-MM-DD.")
+
+    today = datetime.date.today()
+
+    if required_date < today:
+        raise ValidationError("date_required cannot be in the past.")
+
+    # ------------------------------------------------
+    # VALIDATE CUSTOMER
+    # ------------------------------------------------
+
+    partner = client.search_read(
+        model="res.partner",
+        domain=[
+            ("id", "=", partner_id),
+            ("customer_rank", ">", 0),
+        ],
+        fields=["id", "name"],
+        limit=1,
+    )
+
+    if not partner:
+        raise ValidationError(
+            f"Customer {partner_id} does not exist or is not a customer."
+        )
+
+    partner_name = partner[0]["name"]
+
+    # ------------------------------------------------
+    # VALIDATE PRODUCT
+    # ------------------------------------------------
+
+    product = client.search_read(
+        model="product.product",
+        domain=[
+            ("id", "=", product_id),
+            ("active", "=", True),
+        ],
+        fields=["id", "name"],
+        limit=1,
+    )
+
+    if not product:
+        raise ValidationError(
+            f"Product {product_id} does not exist or is inactive."
+        )
+
+    product_name = product[0]["name"]
+
+    # ------------------------------------------------
+    # CUSTOMER CREDIT ANALYSIS
+    # ------------------------------------------------
+
+    credit_response = check_customer_credit(partner_id=partner_id)
+
+    credit_data = credit_response["data"]
+    credit_summary = credit_response["summary"]
+
+    credit_status = credit_summary.get("credit_status")
+
+    credit_approved = credit_status in [
+        "good_standing",
+        "no_limit_configured",
+    ]
+
+    customer_analysis = {
+        "partner_id": partner_id,
+        "partner_name": partner_name,
+        "credit_limit": credit_summary.get("credit_limit"),
+        "available_credit": credit_summary.get("available_credit"),
+        "credit_status": credit_status,
+        "credit_approved": credit_approved,
+        "overdue_invoices": credit_data.get("overdue_invoices"),
+    }
+
+    # ------------------------------------------------
+    # INVENTORY ANALYSIS
+    # ------------------------------------------------
+
+    stock_response = check_material_availability(
+    product_id=product_id,
+    quantity_needed=quantity,
+    date_needed=date_required,
+)
+
+    stock_data = stock_response["data"]
+    stock_summary = stock_response["summary"]
+
+    can_ship_from_stock = stock_summary.get("can_fulfill", False)
+
+    inventory_analysis = {
+        "current_stock": stock_data.get("current_stock"),
+        "incoming_qty": stock_data.get("incoming_qty"),
+        "total_available": stock_data.get("total_available"),
+        "can_ship_from_stock": can_ship_from_stock,
+        "shortage_qty": stock_summary.get("shortage"),
+        "expected_available_date": stock_data.get("expected_available_date"),
+    }
+
+    # ------------------------------------------------
+    # MANUFACTURING ANALYSIS (Tool 31)
+    # ------------------------------------------------
+
+    manufacturing_analysis = None
+
+    if not can_ship_from_stock:
+
+        manufacturing_response = check_manufacturing_feasibility(
+        product_id=product_id,
+        quantity=quantity,
+        date_needed=date_required,
+    )
+
+    manufacturing_data = manufacturing_response["data"]
+    manufacturing_summary = manufacturing_response["summary"]
+
+    manufacturing_analysis = {
+        "materials": manufacturing_data.get("materials"),
+        "blocking_components": manufacturing_data.get("blocking_components"),
+        "feasible": manufacturing_summary.get("feasible"),
+        "max_producible_quantity": manufacturing_summary.get("max_producible_quantity"),
+        "capacity": manufacturing_summary.get("capacity"),
+    }
+
+    # ------------------------------------------------
+    # RESOURCE ANALYSIS
+    # ------------------------------------------------
+
+    dept = client.search_read(
+        model="hr.department",
+        domain=[("name", "ilike", "manufactur")],
+        fields=["id"],
+        limit=1,
+    )
+
+    dept_id = dept[0]["id"] if dept else None
+
+    staff_count = 0
+
+    if dept_id:
+
+        staff_count = client.search_count(
+            model="hr.employee",
+            domain=[
+                ("active", "=", True),
+                ("department_id", "=", dept_id),
+            ],
+        )
+
+    resource_analysis = {
+        "manufacturing_staff_headcount": staff_count
+    }
+
+    # ------------------------------------------------
+    # DECISION LOGIC
+    # ------------------------------------------------
+
+    risks: List[str] = []
+    action_items: List[str] = []
+
+    if not credit_approved:
+        risks.append("Customer credit not approved.")
+        action_items.append("Resolve credit issue before confirming order.")
+
+    if can_ship_from_stock and credit_approved:
+
+        can_fulfill = True
+        confidence = "high"
+
+        recommended_date = (
+            today + datetime.timedelta(days=2)
+        ).isoformat()
+
+        action_items.append("Reserve stock and ship order.")
+
+    elif manufacturing_summary.get("feasible") and credit_approved:
+
+        can_fulfill = True
+        confidence = "medium"
+
+        recommended_date = date_required
+
+        action_items.append("Create manufacturing order.")
+
+    else:
+
+        can_fulfill = False
+        confidence = "low"
+
+        recommended_date = None
+
+        risks.append("Order cannot be fulfilled with current resources.")
+
+    insights = []
+
+    if not credit_approved:
+        insights.append("Customer credit is not approved")
+
+    if can_ship_from_stock:
+        insights.append("Order can be fulfilled from current stock")
+
+    elif manufacturing_analysis and manufacturing_summary.get("feasible"):
+        insights.append("Order can be fulfilled via manufacturing")
+
+    else:
+        insights.append("Order cannot be fulfilled with current conditions")
+
+    insights.append(f"Confidence level: {confidence}")
+
+    # ------------------------------------------------
+    # FINAL RESPONSE
+    # ------------------------------------------------
+
+    return wrap_response(
+    data={
+        "request": {
+            "partner_id": partner_id,
+            "partner_name": partner_name,
+            "product_id": product_id,
+            "product_name": product_name,
+            "quantity": quantity,
+            "date_required": date_required,
+        },
+        "customer_analysis": customer_analysis,
+        "inventory_analysis": inventory_analysis,
+        "manufacturing_analysis": manufacturing_analysis,
+        "resource_analysis": resource_analysis,
+    },
+    summary={
+        "can_fulfill": can_fulfill,
+        "confidence_level": confidence,
+        "recommended_delivery_date": recommended_date,
+        "risks": risks,
+        "action_items": action_items,
+    },
+    insights=insights,
+    model="composite.order.fulfillment"
+)
+
+# section 9: tool 37 - analyze customer relationship
+def analyze_customer_relationship(
+    *,
+    partner_id: int,
+) -> Dict[str, Any]:
+
+    client = OdooClient()
+
+    if not partner_id:
+        raise ValidationError("partner_id is required.")
+
+    # ------------------------------------------------
+    # CUSTOMER PROFILE
+    # ------------------------------------------------
+
+    partner = client.search_read(
+        model="res.partner",
+        domain=[
+            ("id", "=", partner_id),
+            ("customer_rank", ">", 0),
+        ],
+        fields=["id", "name", "email", "phone"],
+        limit=1,
+    )
+
+    if not partner:
+        raise ValidationError(
+            f"Customer {partner_id} does not exist."
+        )
+
+    partner = partner[0]
+
+    partner_name = partner["name"]
+
+    # ------------------------------------------------
+    # SALES ANALYSIS
+    # ------------------------------------------------
+
+    sales = client.read_group(
+        model="sale.order",
+        domain=[
+            ("partner_id", "=", partner_id),
+            ("state", "in", ["sale", "done"]),
+        ],
+        fields=["amount_total:sum"],
+        groupby=[],
+    )
+
+    lifetime_value = (
+        sales[0].get("amount_total", 0.0) if sales else 0.0
+    )
+
+    order_count = client.search_count(
+        model="sale.order",
+        domain=[
+            ("partner_id", "=", partner_id),
+            ("state", "in", ["sale", "done"]),
+        ],
+    )
+
+    # ------------------------------------------------
+    # CRM OPPORTUNITIES
+    # ------------------------------------------------
+
+    opportunities = client.read_group(
+        model="crm.lead",
+        domain=[
+            ("partner_id", "=", partner_id),
+            ("type", "=", "opportunity"),
+            ("probability", "<", 100),
+        ],
+        fields=["expected_revenue:sum"],
+        groupby=[],
+    )
+
+    open_opportunity_value = (
+        opportunities[0].get("expected_revenue", 0.0)
+        if opportunities else 0.0
+    )
+
+    open_opportunity_count = client.search_count(
+        model="crm.lead",
+        domain=[
+            ("partner_id", "=", partner_id),
+            ("type", "=", "opportunity"),
+            ("probability", "<", 100),
+        ],
+    )
+
+    # ------------------------------------------------
+    # PAYMENT BEHAVIOR
+    # ------------------------------------------------
+
+    invoices_response = get_payment_history(partner_id=partner_id)
+
+    payment_data = invoices_response["data"]
+    payment_summary = invoices_response["summary"]
+
+    credit_response = check_customer_credit(partner_id=partner_id)
+
+    credit_data = credit_response["data"]
+    credit_summary = credit_response["summary"]
+
+    overdue_count = credit_data.get("overdue_invoices", {}).get("count", 0)
+
+    # ------------------------------------------------
+    # RELATIONSHIP SCORE
+    # ------------------------------------------------
+
+    if lifetime_value > 100000 and overdue_count == 0:
+        score = "excellent"
+    elif lifetime_value > 20000:
+        score = "good"
+    elif lifetime_value > 0:
+        score = "fair"
+    else:
+        score = "poor"
+
+    # ------------------------------------------------
+    # RECOMMENDATIONS
+    # ------------------------------------------------
+
+    actions: List[str] = []
+
+    if score == "excellent":
+        actions.append("Consider loyalty rewards or strategic partnership.")
+
+    elif score == "good":
+        actions.append("Maintain engagement and explore upsell opportunities.")
+
+    elif score == "fair":
+        actions.append("Increase engagement and monitor payment behavior.")
+
+    else:
+        actions.append("Evaluate credit risk before new orders.")
+
+
+    insights = []
+
+    insights.append(f"Customer lifetime value: {round(lifetime_value, 2)}")
+
+    if order_count > 0:
+        insights.append(f"{order_count} completed sales orders")
+
+    if open_opportunity_count > 0:
+        insights.append(f"{open_opportunity_count} active opportunities")
+
+    if overdue_count > 0:
+        insights.append(f"{overdue_count} overdue invoices detected")
+
+    insights.append(f"Relationship classified as '{score}'")
+
+
+    # ------------------------------------------------
+    # RESPONSE
+    # ------------------------------------------------
+
+    return wrap_response(
+    data={
+        "customer_profile": {
+            "partner_id": partner_id,
+            "partner_name": partner_name,
+            "email": partner.get("email"),
+            "phone": partner.get("phone"),
+        },
+        "sales_summary": {
+            "lifetime_value": round(lifetime_value, 2),
+            "total_orders": order_count,
+        },
+        "crm_opportunities": {
+            "open_opportunity_count": open_opportunity_count,
+            "open_opportunity_value": round(open_opportunity_value, 2),
+        },
+        "payment_behavior": payment_summary,
+    },
+    summary={
+        "relationship_health": score,
+        "recommended_actions": actions,
+    },
+    insights=insights,
+    model="composite.customer.relationship"
+)
+
+# tool 38 - evaluate purchase order
+# tool 38 - evaluate purchase order
+def evaluate_purchase_order(
+    *,
+    order_id: int,
+) -> Dict[str, Any]:
+
+    client = OdooClient()
+
+    if not order_id:
+        raise ValidationError("order_id is required")
+
+    # ------------------------------------------------
+    # STEP 1 — Fetch PO
+    # ------------------------------------------------
+
+    po = client.search_read(
+        model="purchase.order",
+        domain=[("id", "=", order_id)],
+        fields=[
+            "id",
+            "name",
+            "amount_total",
+            "partner_id",
+            "state",
+        ],
+        limit=1,
+    )
+
+    if not po:
+        raise ValidationError(f"Purchase Order {order_id} not found")
+
+    po = po[0]
+    amount = po.get("amount_total") or 0
+
+    # ------------------------------------------------
+    # STEP 2 — Fetch PO Lines
+    # ------------------------------------------------
+
+    lines_response = get_purchase_order_lines(order_id=order_id)
+    lines = lines_response.get("data", [])
+
+    material_analysis = []
+    unnecessary_items = []
+    shortage_items = []
+
+    # ------------------------------------------------
+    # STEP 3 — Check Material Need
+    # ------------------------------------------------
+
+    for line in lines:
+
+        product_id = line.get("product_id")
+        qty = line.get("product_qty")
+
+        if not product_id or not qty:
+            continue
+
+        availability = check_material_availability(
+            product_id=product_id,
+            quantity_needed=qty,
+        )
+
+        data = availability.get("data", {})
+        summary = availability.get("summary", {})
+
+        can_fulfill = summary.get("can_fulfill", False)
+        shortage = summary.get("shortage", 0)
+
+        material_analysis.append({
+            "product_id": product_id,
+            "product_name": line.get("product_name"),
+            "required_qty": qty,
+            "available": data.get("current_stock"),
+            "incoming": data.get("incoming_qty"),
+            "can_fulfill": can_fulfill,
+            "shortage": shortage,
+        })
+
+        if can_fulfill:
+            unnecessary_items.append(line.get("product_name"))
+        else:
+            shortage_items.append(line.get("product_name"))
+
+    # ------------------------------------------------
+    # STEP 4 — Fetch Policy
+    # ------------------------------------------------
+
+    company = client.search_read(
+        model="res.company",
+        domain=[("id", "=", client.company_id)],
+        fields=[
+            "po_double_validation",
+            "po_double_validation_amount"
+        ],
+        limit=1,
+    )
+
+    validation_type = company[0].get("po_double_validation") if company else None
+    threshold = company[0].get("po_double_validation_amount") if company else 0
+
+    # ------------------------------------------------
+    # STEP 5 — Evaluate Conditions
+    # ------------------------------------------------
+
+    conditions = []
+
+    # Policy
+    if validation_type == "one_step":
+        conditions.append("Company policy does not require approval.")
+        policy_ok = True
+    else:
+        if amount <= threshold:
+            conditions.append(f"Amount {amount} is within threshold {threshold}.")
+            policy_ok = True
+        else:
+            conditions.append(f"Amount {amount} exceeds threshold {threshold}.")
+            policy_ok = False
+
+    # State
+    if po.get("state") not in ["draft", "sent"]:
+        conditions.append(f"PO is in '{po.get('state')}' state and cannot be approved.")
+        state_ok = False
+    else:
+        conditions.append("PO is in approvable state.")
+        state_ok = True
+
+    # Material necessity
+    if unnecessary_items:
+        conditions.append(
+            f"Some items already available in stock: {', '.join(unnecessary_items)}"
+        )
+
+    if shortage_items:
+        conditions.append(
+            f"Shortage detected for: {', '.join(shortage_items)}"
+        )
+
+    # ------------------------------------------------
+    # STEP 6 — Final Decision (ONLY SUGGESTION)
+    # ------------------------------------------------
+
+    can_be_approved = policy_ok and state_ok
+
+    if shortage_items:
+        recommendation = "PO is justified due to material shortage. User may approve."
+    elif unnecessary_items:
+        recommendation = "PO may not be necessary. Review before approving."
+    else:
+        recommendation = "Review required before approval."
+
+    # ------------------------------------------------
+    # FINAL RESPONSE
+    # ------------------------------------------------
+
+    return {
+        "order_id": order_id,
+        "order_name": po.get("name"),
+        "amount": amount,
+        "can_be_approved": can_be_approved,
+        "material_analysis": material_analysis,
+        "conditions": conditions,
+        "recommendation": recommendation,
+    }
